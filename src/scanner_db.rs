@@ -61,7 +61,7 @@ impl From<std::io::Error> for Error {
 
 /// Handle to a record in the scanner's memory pool (1 to about 45000).
 /// "-1" on the wire (end of list / none) is represented as Option::None.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Index(pub u16);
 
 impl fmt::Display for Index {
@@ -74,14 +74,14 @@ impl fmt::Display for Index {
 pub const MAX_BLOCKS: usize = 45_000;
 
 /// The previous/next pointers every record carries.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Links {
     pub rev: Option<Index>, // REV_INDEX: previous record in the same list
     pub fwd: Option<Index>, // FWD_INDEX: next record in the same list
 }
 
 /// Frequency in units of 100 Hz, as the scanner stores it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Freq(pub u32);
 
 impl Freq {
@@ -113,7 +113,7 @@ impl fmt::Display for Freq {
 }
 
 /// Alpha tag, up to 16 printable ASCII characters, no commas.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Eq, Default)]
 pub struct Name(String);
 
 impl Name {
@@ -141,7 +141,7 @@ impl fmt::Display for Name {
 
 /// Talkgroup ID as sent by the scanner. Format depends on the system type
 /// (decimal, hex, AFS "aa-fff", etc.), so it is kept raw until that is mapped out.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct Tgid(pub String);
 
 impl FromStr for Tgid {
@@ -161,7 +161,7 @@ impl fmt::Display for Tgid {
 macro_rules! wire_enum {
     ($(#[$meta:meta])* $name:ident { $($(#[$vmeta:meta])* $variant:ident = $wire:literal),+ $(,)? }) => {
         $(#[$meta])*
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
         pub enum $name {
             $($(#[$vmeta])* $variant),+
         }
@@ -261,7 +261,7 @@ wire_enum! {
 }
 
 /// Delay time in seconds; only these values are valid (negative = resume early).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DelayTime(i8);
 
 impl DelayTime {
@@ -290,7 +290,7 @@ impl fmt::Display for DelayTime {
 
 /// Quick key or startup key. "." on the wire means deliberately unassigned.
 /// Ranges differ by record: systems/sites 0-99, groups 1-9 and 0, startup keys 0-9.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum KeyAssignment {
     Unassigned,
     Key(u8),
@@ -316,7 +316,7 @@ impl fmt::Display for KeyAssignment {
 }
 
 /// Number tag 0-999, or "NONE".
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NumberTag {
     Unassigned,
     Tag(u16),
@@ -368,7 +368,7 @@ const DCS_LABELS: [u16; 112] = [
 ];
 
 /// Decoded meaning of a tone code.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tone {
     Off,
     Search,
@@ -377,7 +377,7 @@ pub enum Tone {
 }
 
 /// Wire tone code (0-239). Only valid codes can be constructed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ToneCode(u16);
 
 impl ToneCode {
@@ -431,7 +431,7 @@ impl fmt::Display for ToneCode {
 }
 
 /// The P25NAC field: NAC, DMR color code, search, or none.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DigitalCode {
     Nac(u16),      // 0x000-0xFFF
     ColorCode(u8), // 0-15, sent as 0x1000 + code
@@ -466,7 +466,7 @@ impl fmt::Display for DigitalCode {
 }
 
 /// TFQ color code: 0-15 or search.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ColorCodeSetting {
     Code(u8),
     Search,
@@ -492,7 +492,7 @@ impl fmt::Display for ColorCodeSetting {
 }
 
 /// Degrees, minutes, and seconds in hundredths, plus hemisphere.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Dms {
     pub degrees: u8,
     pub minutes: u8,       // 0-59
@@ -536,7 +536,7 @@ impl Dms {
 }
 
 /// Latitude, wire form DDMMSSssN / DDMMSSssS.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Latitude(pub Dms);
 
 impl FromStr for Latitude {
@@ -553,7 +553,7 @@ impl fmt::Display for Latitude {
 }
 
 /// Longitude, wire form DDDMMSSssE / DDDMMSSssW.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Longitude(pub Dms);
 
 impl FromStr for Longitude {
@@ -570,7 +570,7 @@ impl fmt::Display for Longitude {
 }
 
 /// Location-based scanning settings shared by sites, groups, and location alerts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct GeoFence {
     pub latitude: Option<Latitude>,
     pub longitude: Option<Longitude>,
@@ -687,6 +687,41 @@ pub fn parse_index_reply(cmd: &'static str, reply: &str) -> Result<Option<Index>
     Fields::new(cmd, reply)?.link()
 }
 
+/// Ask the scanner how many memory blocks are still free (RMB).
+pub fn read_free_blocks<S: Scanner>(sc: &mut S) -> Result<usize, Error> {
+    let reply = sc.send("RMB")?;
+    let value = Fields::new("RMB", &reply)?.raw()?.to_string();
+    value
+        .parse()
+        .map_err(|_| Error::BadValue { cmd: "RMB", pos: 1, value })
+}
+
+/// What the scanner reports about its own memory (RMB and MEM).
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
+pub struct ScannerMemory {
+    pub free_blocks: usize,
+    pub percent_used: u8,
+    pub systems: u32,
+    pub sites: u32,
+    pub channels: u32,
+    pub location_alerts: u32,
+}
+
+/// Read the scanner's own memory statistics. Must be called in Program Mode.
+pub fn read_scanner_memory<S: Scanner>(sc: &mut S) -> Result<ScannerMemory, Error> {
+    let free_blocks = read_free_blocks(sc)?;
+    let reply = sc.send("MEM")?;
+    let mut f = Fields::new("MEM", &reply)?;
+    Ok(ScannerMemory {
+        free_blocks,
+        percent_used: f.req()?,
+        systems: f.req()?,
+        sites: f.req()?,
+        channels: f.req()?,
+        location_alerts: f.req()?,
+    })
+}
+
 /// Check a "CMD,OK" reply.
 pub fn expect_ok(cmd: &'static str, reply: &str) -> Result<(), Error> {
     match Fields::new(cmd, reply)?.raw()? {
@@ -696,7 +731,7 @@ pub fn expect_ok(cmd: &'static str, reply: &str) -> Result<(), Error> {
 }
 
 /// One system, from SIN.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 pub struct SystemRecord {
     pub sys_type: SystemType, // always present, even when protected
     pub name: Name,
@@ -756,7 +791,7 @@ impl SystemRecord {
 }
 
 /// Trunking settings for a trunked system, from TRN (same index as the system).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 pub struct TrunkRecord {
     pub id_search: Option<bool>,  // false = ID Scan, true = ID Search
     pub status_bit: Option<bool>, // Motorola status bit
@@ -813,7 +848,7 @@ impl TrunkRecord {
 }
 
 /// One site of a trunked system, from SIF.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 pub struct SiteRecord {
     pub name: Name,
     pub quick_key: Option<KeyAssignment>,
@@ -877,7 +912,7 @@ impl SiteRecord {
 }
 
 /// One entry of a Motorola custom band plan.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MotBand {
     pub lower: Freq,
     pub upper: Freq,
@@ -886,7 +921,7 @@ pub struct MotBand {
 }
 
 /// Motorola custom band plan (MCP), six entries; unused entries are None.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct MotBandPlan {
     pub bands: [Option<MotBand>; 6],
 }
@@ -907,14 +942,14 @@ impl MotBandPlan {
 }
 
 /// One entry of a P25 band plan, stored in plain units.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct P25Band {
     pub base_hz: u64,    // wire: hex(base_hz / 5)
     pub spacing_hz: u32, // wire: hex(spacing_hz / 125)
 }
 
 /// APCO P25 band plan (ABP), sixteen entries (0-F); "0" on the wire = unused.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Eq)]
 pub struct P25BandPlan {
     pub bands: [Option<P25Band>; 16],
 }
@@ -939,7 +974,7 @@ impl P25BandPlan {
 }
 
 /// One trunk frequency of a site, from TFQ.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 pub struct TrunkFreqRecord {
     pub freq: Option<Freq>,
     pub lcn: Option<u16>, // EDACS 1-30, LTR 1-20, DMR/TRBO 0-4094; ignored for MOT/SCAT
@@ -980,7 +1015,7 @@ impl TrunkFreqRecord {
 }
 
 /// A channel group or TGID group, from GIN.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 pub struct GroupRecord {
     pub group_type: GroupType,
     pub name: Name,
@@ -1013,7 +1048,7 @@ impl GroupRecord {
 }
 
 /// A conventional channel, from CIN.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 pub struct ChannelRecord {
     pub name: Name,
     pub freq: Option<Freq>,
@@ -1078,7 +1113,7 @@ impl ChannelRecord {
 }
 
 /// A talkgroup ID entry, from TIN.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 pub struct TgidRecord {
     pub name: Name,
     pub tgid: Option<Tgid>,
@@ -1131,7 +1166,7 @@ impl TgidRecord {
 }
 
 /// A location alert (POI, dangerous road, dangerous crossing), from LIN.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 pub struct LocationAlertRecord {
     pub alert_type: LocationAlertType,
     pub name: Name,
@@ -1173,13 +1208,50 @@ impl LocationAlertRecord {
 }
 
 /// Everything read from the scanner's scan memory.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 pub struct ScanDatabase {
     pub systems: Vec<System>, // in scan order (system list link order)
 }
 
+impl ScanDatabase {
+    /// (systems, sites, channels incl. talkgroups) as counted in this database.
+    pub fn counts(&self) -> (usize, usize, usize) {
+        let (mut sites, mut channels) = (0, 0);
+        for s in &self.systems {
+            match &s.kind {
+                SystemKind::Conventional { groups } => {
+                    channels += groups.iter().map(|g| g.channels.len()).sum::<usize>();
+                }
+                SystemKind::Trunked { sites: st, tgid_groups, .. } => {
+                    sites += st.len();
+                    channels += tgid_groups.iter().map(|g| g.tgids.len()).sum::<usize>();
+                }
+            }
+        }
+        (self.systems.len(), sites, channels)
+    }
+
+    /// Memory blocks used: one per system, site, group, channel, talkgroup and trunk frequency.
+    pub fn blocks_used(&self) -> usize {
+        self.systems
+            .iter()
+            .map(|s| {
+                1 + match &s.kind {
+                    SystemKind::Conventional { groups } => {
+                        groups.iter().map(|g| 1 + g.channels.len()).sum::<usize>()
+                    }
+                    SystemKind::Trunked { sites, tgid_groups, .. } => {
+                        sites.iter().map(|s| 1 + s.frequencies.len()).sum::<usize>()
+                            + tgid_groups.iter().map(|g| 1 + g.tgids.len()).sum::<usize>()
+                    }
+                }
+            })
+            .sum()
+    }
+}
+
 /// A system and everything under it.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 pub struct System {
     pub index: Index, // where it was read from; stale after writes
     pub info: SystemRecord,
@@ -1187,7 +1259,7 @@ pub struct System {
 }
 
 /// Conventional and trunked systems have different children.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 pub enum SystemKind {
     Conventional {
         groups: Vec<ChannelGroup>,
@@ -1199,20 +1271,20 @@ pub enum SystemKind {
     },
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 pub struct ChannelGroup {
     pub index: Index,
     pub info: GroupRecord, // group_type == GroupType::Channel
     pub channels: Vec<Channel>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 pub struct Channel {
     pub index: Index,
     pub info: ChannelRecord,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 pub struct Site {
     pub index: Index,
     pub info: SiteRecord,
@@ -1221,26 +1293,26 @@ pub struct Site {
 }
 
 /// Site band plan, depending on system type.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 pub enum BandPlan {
     Motorola(MotBandPlan),
     P25(P25BandPlan),
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 pub struct TrunkFreq {
     pub index: Index,
     pub info: TrunkFreqRecord,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 pub struct TgidGroup {
     pub index: Index,
     pub info: GroupRecord, // group_type == GroupType::Tgid
     pub tgids: Vec<TgidEntry>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 pub struct TgidEntry {
     pub index: Index,
     pub info: TgidRecord,
@@ -1662,6 +1734,22 @@ mod tests {
             }
             SystemKind::Trunked { .. } => panic!("expected conventional"),
         }
+    }
+
+    #[test]
+    fn database_round_trips_through_ron() {
+        let mut sc = Mock(HashMap::from([
+            ("PRG", "PRG,OK"),
+            ("EPG", "EPG,OK"),
+            ("SIH", "SIH,10"),
+            ("SIN,10", "SIN,CNV,County,1,0,0,2,,,,,,-1,-1,11,11,1,.,,,,,,NONE,0,0,0,0,"),
+            ("GIN,11", "GIN,C,Fireground,1,0,-1,-1,10,12,12,1,,,,"),
+            ("CIN,12", "CIN,Dispatch,01545500,NFM,0,0,0,0,0,0,0,-1,-1,10,11,,0,,NONE,OFF,0,0"),
+        ]));
+        let db = with_program_mode(&mut sc, read_database).unwrap();
+        let text = ron::ser::to_string_pretty(&db, ron::ser::PrettyConfig::default()).unwrap();
+        let back: ScanDatabase = ron::from_str(&text).unwrap();
+        assert_eq!(db, back);
     }
 
     #[test]

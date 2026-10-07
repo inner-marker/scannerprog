@@ -1,7 +1,7 @@
 use dioxus::prelude::*;
 
-use crate::scanner_db::{BandPlan, Freq, Modulation, ChannelGroup, Site, System, SystemKind, TgidGroup};
-use crate::scanner_interaction::SCAN_DATABASE;
+use crate::scanner_db::{BandPlan, Freq, MAX_BLOCKS, Modulation, ChannelGroup, Site, System, SystemKind, TgidGroup};
+use crate::scanner_interaction::{SCANNER_MEMORY, SCAN_DATABASE};
 
 fn text(v: String) -> Element {
     rsx! { input { r#type: "text", value: "{v}", disabled: true } }
@@ -55,8 +55,24 @@ pub fn DatabaseView() -> Element {
     let Some(db) = db.as_ref() else {
         return rsx! {};
     };
+    let used = db.blocks_used();
+    let (systems, sites, channels) = db.counts();
+    let percent = used as f64 / MAX_BLOCKS as f64 * 100.0;
     rsx! {
         div { id: "database-view",
+            p { id: "memory-usage",
+                "Memory used: {used} / {MAX_BLOCKS} blocks ({percent:.1}%) "
+                meter { min: 0, max: MAX_BLOCKS as f64, value: used as f64 }
+            }
+            if let Some(mem) = SCANNER_MEMORY.read().as_ref() {
+                p { id: "scanner-memory-usage",
+                    "Scanner reports: {mem.percent_used}% memory used, {mem.free_blocks} blocks free "
+                    "(systems {mem.systems}, sites {mem.sites}, channels {mem.channels}, location alerts {mem.location_alerts}); as of the last download"
+                }
+                p {
+                    "Downloaded here: systems {systems}, sites {sites}, channels/talkgroups {channels}"
+                }
+            }
             h2 { "Systems ({db.systems.len()})" }
             for system in db.systems.iter() {
                 SystemView { system: system.clone() }

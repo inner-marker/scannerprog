@@ -7,7 +7,11 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+chrono = "0.4.45"
 dioxus = { version = "0.7.1", features = ["router"] }
+dirs = "7.0.0"
+ron = "0.12.2"
+serde = { version = "1.0.229", features = ["derive"] }
 serialport = { version = "4.10.1", default-features = false }
 tokio = { version = "1.53.2", features = ["time", "rt", "sync"] }
 

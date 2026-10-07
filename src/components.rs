@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use crate::database_view::DatabaseView;
 use crate::scanner_interaction::{
-    detect_scanner, download_database, DownloadStatus, DOWNLOAD_ACTIVE, DOWNLOAD_STATUS, SCANNER_INFO,
+    detect_scanner, download_database, save_database_ron, DownloadStatus, DOWNLOAD_ACTIVE, DOWNLOAD_STATUS, SCANNER_INFO, SCAN_DATABASE,
     SCANNER_USB_DEVICE,
 };
 
@@ -132,6 +132,7 @@ fn Home() -> Element {
 
 #[component]
 fn Database() -> Element {
+    let mut save_message = use_signal(String::new);
     rsx! {
         main {
             h1 { "Database" }
@@ -144,6 +145,31 @@ fn Database() -> Element {
                     },
                     title: "Download the database from the connected scanner.",
                     "Download"
+                }
+            }
+
+            if SCAN_DATABASE.read().is_some() {
+                div {
+                    button {
+                        id: "save-ron",
+                        onclick: move |_| {
+                            let model = SCANNER_INFO
+                                .peek()
+                                .as_ref()
+                                .map(|s| s.model.clone())
+                                .unwrap_or_else(|| "Scanner".into());
+                            let result = match SCAN_DATABASE.peek().as_ref() {
+                                Some(db) => save_database_ron(db, &model),
+                                None => Err("Nothing to save".to_string()),
+                            };
+                            save_message.set(match result {
+                                Ok(path) => format!("Saved to {}", path.display()),
+                                Err(error) => format!("Save failed: {error}"),
+                            });
+                        },
+                        "Save as RON"
+                    }
+                    " {save_message}"
                 }
             }
 

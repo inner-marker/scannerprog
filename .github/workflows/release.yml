@@ -1,0 +1,78 @@
+name: Release  # Workflow name shown in the Actions tab
+
+on:
+  push:
+    tags:
+      - 'v*'  # Only run when you push a tag like v1.0.0
+
+permissions:
+  contents: write  # Needed so the workflow can create a release
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        # Each entry pairs a runner OS with a friendly label
+        include:
+          - os: ubuntu-latest
+            platform: linux
+          - os: macos-latest
+            platform: macos
+          - os: windows-latest
+            platform: windows
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4  # Pull down your repo
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable  # Stable Rust toolchain
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2  # Speeds up repeat builds
+
+      # Linux needs GTK/webkit dev libraries for Dioxus desktop
+      - name: Install Linux deps
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libxdo-dev
+
+      # Installs cargo-binstall so we can fetch prebuilt binaries
+      - name: Install cargo-binstall
+        uses: cargo-bins/cargo-binstall@main
+
+      # Grab the prebuilt dx binary instead of compiling it
+      # --no-confirm skips the interactive prompt (CI has no terminal)
+      # Pin the version to match the dioxus crate in your Cargo.toml
+      - name: Install Dioxus CLI
+        run: cargo binstall dioxus-cli --version 0.6.3 --no-confirm
+
+      - name: Bundle app
+        run: dx bundle --release  # Produces the platform package
+
+      # Extract release notes for the current version from the CHANGELOG.md
+      - name: Extract release notes from CHANGELOG
+        shell: bash  # Forces bash on the Windows runner too (Git Bash)
+        run: |
+          # Tag "v1.2.0" -> "1.2.0"
+          VERSION="${GITHUB_REF_NAME#v}"
+
+          awk -v ver="$VERSION" '
+            /^## / {                      # Hit a version header
+              if (found) exit             # Already printing? Next header means we are done
+              h = $2                      # Second field, e.g. "[1.2.0]" or "v1.2.0"
+              sub(/^\[/, "", h)           # Strip leading [
+              sub(/\]$/, "", h)           # Strip trailing ]
+              sub(/^v/, "", h)            # Strip leading v
+              if (h == ver) { found = 1; next }  # Exact match: start printing after this line
+            }
+            found { print }               # Copy lines in the matching section
+          ' CHANGELOG.md > RELEASE_NOTES.md
+
+          # Fail the build if no section matched, so you notice a forgotten changelog entry
+          test -s RELEASE_NOTES.md || { echo "No CHANGELOG entry for $VERSION"; exit 1; }
+
+      - name: Upload artifacts to release
+        uses: softprops/action-gh-release@v2  # Attaches files to the release
+        with:
+          files: target/dx/**/bundle/**/*  # Glob of bundled output

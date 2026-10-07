@@ -3,7 +3,7 @@ use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use crate::scanner_db::{self, Error, Scanner, ScanDatabase};
+use crate::scanner_db::{self, Error, ScanDatabase, Scanner, ScannerMemory};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScannerInfo {
@@ -127,6 +127,9 @@ pub static DOWNLOAD_STATUS: GlobalSignal<DownloadStatus> = Signal::global(|| Dow
 /// The most recently downloaded scan database.
 pub static SCAN_DATABASE: GlobalSignal<Option<ScanDatabase>> = Signal::global(|| None);
 
+/// Memory statistics reported by the scanner (RMB, MEM) at the last download, if it answered.
+pub static SCANNER_MEMORY: GlobalSignal<Option<ScannerMemory>> = Signal::global(|| None);
+
 /// The scanner currently detected on a serial port.
 pub static SCANNER_INFO: GlobalSignal<Option<ScannerInfo>> = Signal::global(|| None);
 
@@ -162,14 +165,16 @@ impl Scanner for SerialScanner {
 fn download_blocking(
     port_name: &str,
     mut progress: impl FnMut(usize, usize),
-) -> Result<ScanDatabase, Error> {
+) -> Result<(ScanDatabase, Option<ScannerMemory>), Error> {
     let port = serialport::new(port_name, 115_200)
         .timeout(Duration::from_secs(3))
         .open()
         .map_err(|e| Error::Io(e.into()))?;
     let mut scanner = SerialScanner(port);
     scanner_db::with_program_mode(&mut scanner, |sc| {
-        scanner_db::read_database_with_progress(sc, &mut progress)
+        let db = scanner_db::read_database_with_progress(sc, &mut progress)?;
+        // The cross-check is optional: a failed RMB/MEM must not fail the download.
+        Ok((db, scanner_db::read_scanner_memory(sc).ok()))
     })
 }
 
@@ -197,7 +202,8 @@ pub async fn download_database() {
     }
 
     match task.await {
-        Ok(Ok(db)) => {
+        Ok(Ok((db, memory))) => {
+            *SCANNER_MEMORY.write() = memory;
             *SCAN_DATABASE.write() = Some(db);
             *DOWNLOAD_STATUS.write() = DownloadStatus::Completed;
         }
@@ -205,4 +211,23 @@ pub async fn download_database() {
         Err(e) => *DOWNLOAD_STATUS.write() = DownloadStatus::Failed(e.to_string()),
     }
     DOWNLOAD_ACTIVE.store(false, Ordering::SeqCst);
+}
+
+/// Saves `db` as RON to `~/Documents/Scanner Programmer/<timestamp> <model> Download.ron`
+/// and returns the path written.
+pub fn save_database_ron(db: &ScanDatabase, model: &str) -> Result<std::path::PathBuf, String> {
+    let dir = dirs::document_dir()
+        .ok_or("Could not find the Documents folder")?
+        .join("Scanner Programmer");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
+
+    // Keep path separators in the model name out of the file name.
+    let model = model.replace(['/', '\\'], "-");
+    let stamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+    let path = dir.join(format!("{stamp} {model} Download.ron"));
+
+    let text = ron::ser::to_string_pretty(db, ron::ser::PrettyConfig::default())
+        .map_err(|e| format!("Could not serialize the database: {e}"))?;
+    std::fs::write(&path, text).map_err(|e| format!("Could not write {}: {e}", path.display()))?;
+    Ok(path)
 }
