@@ -1,3 +1,7 @@
+## [0.1.1] - Initial Release
+
+ - Fix release.yml Github Actions workflow (Dioxus CLI version updated to 0.7.10)
+
 ## [0.1.0] - Initial Release
 
 - [x] Detect a Uniden scanner
