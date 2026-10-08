@@ -3,9 +3,10 @@ use dioxus::prelude::*;
 use std::time::Duration;
 
 use crate::database_view::{DatabaseView, MemoryUsage};
+use crate::confirm::{confirm, confirm_with_details, ConfirmDialog};
 use crate::messages::{push_message, MessageCenter, MessageKind};
 use crate::scanner_interaction::{
-    default_save_dir, default_save_name, detect_scanner, download_database, load_database_ron, save_database_ron, DownloadStatus, DOWNLOAD_ACTIVE, DOWNLOAD_STATUS, SCANNER_INFO, SCANNER_MEMORY, SCAN_DATABASE, VALIDATION,
+    default_save_dir, default_save_name, detect_scanner, download_database, upload_database, UPLOAD_PROGRESS, load_database_ron, save_database_ron, DownloadStatus, DOWNLOAD_ACTIVE, DOWNLOAD_STATUS, SCANNER_INFO, SCANNER_MEMORY, SCAN_DATABASE, VALIDATION,
     SCANNER_USB_DEVICE,
 };
 
@@ -114,6 +115,7 @@ fn NavBar() -> Element {
         }
         Outlet::<Route> {}
         MessageCenter {}
+        ConfirmDialog {}
     }
 }
 
@@ -196,7 +198,8 @@ fn Toolbar() -> Element {
         div { id: "toolbar",
             button {
                 id: "download-from-scanner",
-                disabled: matches!(*DOWNLOAD_STATUS.read(), DownloadStatus::InProgress { .. }),
+                disabled: matches!(*DOWNLOAD_STATUS.read(), DownloadStatus::InProgress { .. })
+                    || UPLOAD_PROGRESS.read().is_some(),
                 onclick: move |_| {
                     *UPLOAD_ENABLED.write() = false;
                     spawn(download_database());
@@ -228,11 +231,23 @@ fn Toolbar() -> Element {
             }
             button {
                 id: "upload-to-scanner",
-                disabled: !*UPLOAD_ENABLED.read(),
+                disabled: !*UPLOAD_ENABLED.read()
+                    || UPLOAD_PROGRESS.read().is_some()
+                    || matches!(*DOWNLOAD_STATUS.read(), DownloadStatus::InProgress { .. }),
                 title: "Upload the database to the scanner (requires a successful validation).",
                 onclick: move |_| {
-                    // send a note to the message queue
-                    push_message(MessageKind::Note, "upload", "Uploading database to scanner...");
+                    confirm_with_details(
+                        "Replace the scanner's contents with this database?",
+                        "Uploading deletes every system currently stored on the scanner (including all of \
+                         their groups, channels, sites and talkgroups) and then writes this database in their place.\n\n\
+                         If the upload fails part-way, the scanner will be left with only the systems written so far.\n\n\
+                         Recommended: click \"Download From Scanner\" and then \"Save to File\" first, so you have a \
+                         backup of what is on the scanner now.",
+                        "Upload",
+                        || {
+                            spawn(upload_database());
+                        },
+                    );
                 },
                 "Upload To Scanner"
             }
@@ -282,6 +297,11 @@ fn Toolbar() -> Element {
                 id: "load-ron",
                 disabled: matches!(*DOWNLOAD_STATUS.read(), DownloadStatus::InProgress { .. }),
                 onclick: move |_| {
+                    confirm_with_details(
+                        "Load a database from a file?",
+                        "The database currently shown will be replaced. Any unsaved changes will be lost.",
+                        "Load",
+                        || {
                     *UPLOAD_ENABLED.write() = false;
                     spawn(async move {
                         let mut dialog = rfd::AsyncFileDialog::new()
@@ -313,6 +333,8 @@ fn Toolbar() -> Element {
                             ),
                         }
                     });
+                        },
+                    );
                 },
                 title: "Load a database from a file.",
                 "Load from File"
@@ -320,12 +342,19 @@ fn Toolbar() -> Element {
             button {
                 id: "clear-database",
                 onclick: move |_| {
-                    *UPLOAD_ENABLED.write() = false;
-                    *SCAN_DATABASE.write() = None;
-                    *VALIDATION.write() = None;
-                    *SCANNER_MEMORY.write() = None;
-                    *DOWNLOAD_STATUS.write() = DownloadStatus::NotStarted;
-                    push_message(MessageKind::Note, "file", "Database cleared.");
+                    confirm_with_details(
+                        "Clear the database?",
+                        "The database currently shown will be discarded. Any unsaved changes will be lost.",
+                        "Reset",
+                        || {
+                            *UPLOAD_ENABLED.write() = false;
+                            *SCAN_DATABASE.write() = None;
+                            *VALIDATION.write() = None;
+                            *SCANNER_MEMORY.write() = None;
+                            *DOWNLOAD_STATUS.write() = DownloadStatus::NotStarted;
+                            push_message(MessageKind::Note, "file", "Database cleared.");
+                        },
+                    );
                 },
                 "Reset"
             }
@@ -344,6 +373,9 @@ fn DatabasePage() -> Element {
                     p { "Download in progress... ({done}/{total} systems)" }
                 },
                 _ => rsx! {}
+            }
+            if let Some((done, total)) = *UPLOAD_PROGRESS.read() {
+                p { "Upload in progress... ({done}/{total} systems)" }
             }
             DatabaseView {}
         }

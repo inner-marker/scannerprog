@@ -231,6 +231,67 @@ pub async fn download_database() {
     DOWNLOAD_ACTIVE.store(false, Ordering::SeqCst);
 }
 
+/// `Some((done, total))` systems while an upload to the scanner is running.
+pub static UPLOAD_PROGRESS: GlobalSignal<Option<(usize, usize)>> = Signal::global(|| None);
+
+/// Blocking: replaces the scanner's systems with `db`, reporting `(done, total)` systems.
+fn upload_blocking(
+    port_name: &str,
+    db: &ScanDatabase,
+    mut progress: impl FnMut(usize, usize),
+) -> Result<(), Error> {
+    let port = serialport::new(port_name, 115_200)
+        .timeout(Duration::from_secs(10))
+        .open()
+        .map_err(|e| Error::Io(e.into()))?;
+    let mut scanner = SerialScanner(port);
+    scanner_db::with_program_mode(&mut scanner, |sc| {
+        scanner_db::write_database_with_progress(sc, db, &mut progress)
+    })
+}
+
+fn fail_upload(error: String) {
+    push_message(MessageKind::Warning, "upload", format!("Upload failed: {error}"));
+}
+
+/// Writes [`SCAN_DATABASE`] to the detected scanner, replacing its existing systems.
+pub async fn upload_database() {
+    let Some(port_name) = SCANNER_INFO.peek().as_ref().map(|s| s.port.clone()) else {
+        fail_upload("No scanner detected".into());
+        return;
+    };
+    let Some(db) = SCAN_DATABASE.peek().clone() else {
+        fail_upload("No database to upload".into());
+        return;
+    };
+    if DOWNLOAD_ACTIVE.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    *UPLOAD_PROGRESS.write() = Some((0, db.systems.len()));
+    push_message(MessageKind::Note, "upload", "Uploading database to scanner...");
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let task = tokio::task::spawn_blocking(move || {
+        upload_blocking(&port_name, &db, |done, total| {
+            let _ = tx.send((done, total));
+        })
+    });
+    while let Some(p) = rx.recv().await {
+        *UPLOAD_PROGRESS.write() = Some(p);
+    }
+
+    match task.await {
+        Ok(Ok(())) => push_message(MessageKind::Note, "upload", "Upload completed successfully."),
+        Ok(Err(Error::Scanner { cmd, reply })) if cmd == "PRG" => fail_upload(format!(
+            "scanner rejected PRG: {reply}. Return the scanner to the normal scan/hold screen and try again."
+        )),
+        Ok(Err(e)) => fail_upload(e.to_string()),
+        Err(e) => fail_upload(e.to_string()),
+    }
+    *UPLOAD_PROGRESS.write() = None;
+    DOWNLOAD_ACTIVE.store(false, Ordering::SeqCst);
+}
+
 /// Suggested file name for saving a database: `<timestamp> <model> Download.ron`.
 pub fn default_save_name(model: &str) -> String {
     // Keep path separators in the model name out of the file name.

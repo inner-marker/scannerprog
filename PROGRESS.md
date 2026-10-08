@@ -10,9 +10,15 @@
 
 - [x] Read the database from the scanner
 - [x] Save/Load database to/from a `.ron` file
-- [ ] Edit the database locally
-- [ ] Validate edits to the database
-- [ ] Write the database back to the scanner
+- [x] Edit the database locally
+- [x] Validate edits to the database
+- [x] Write the database back to the scanner
+
+Additional Work:
+
+- Validation
+  - [ ] Memory limits: Up to 500 systems, 1,000 total sites (max 256 per system), 20 groups per system, and 25,000 channels (500 max IDs or 1,000 frequencies per system)
+  - [ ] Frequency limits: 25-512 MHz, 758-824 MHz, 849-869 MHz, and 894-960 MHz. 
 
 ### Scanning
 

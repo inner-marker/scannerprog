@@ -1289,6 +1289,12 @@ impl ScanDatabase {
 
     /// Check the database against the rules the scanner enforces.
     /// Returns every problem found; an empty list means valid.
+    /// 
+    /// # All Validation Steps:
+    /// - Up to 500 systems, 
+    /// - 1,000 total sites (max 256 per system), 
+    /// - 20 groups per system, and 
+    /// - 25,000 channels (500 max IDs or 1,000 frequencies per system)
     pub fn validate(&self) -> Vec<ValidationError> {
         let mut errors = Vec::new();
         let mut quick_keys: HashMap<u8, usize> = HashMap::new();
@@ -1811,32 +1817,207 @@ impl TgidRecord {
     }
 }
 
+impl TrunkRecord {
+    /// TRN set: index, id search, status bit, end code, AFS, rsv x2, emergency alert/level,
+    /// fleet map, custom fleet map, rsv x10, hex IDs, emergency color/pattern, NAC, priority ID scan.
+    pub fn to_set(&self, idx: Index) -> String {
+        SetCmd::new("TRN")
+            .val(idx)
+            .flag(self.id_search)
+            .flag(self.status_bit)
+            .opt(&self.end_code)
+            .flag(self.afs)
+            .rsv(2)
+            .opt(&self.emergency_alert)
+            .opt(&self.emergency_level)
+            .opt(&self.fleet_map)
+            .opt(&self.custom_fleet_map)
+            .rsv(10)
+            .flag(self.hex_ids)
+            .opt(&self.emergency_color)
+            .opt(&self.emergency_pattern)
+            .opt(&self.nac)
+            .flag(self.priority_id_scan)
+            .build()
+    }
+}
+
+impl SiteRecord {
+    /// SIF set: index, name, qk, hold, lockout, modulation, attenuator, control channel only,
+    /// rsv x2, start key, geofence, rsv, Motorola band type, EDACS type, P25 waiting, rsv.
+    pub fn to_set(&self, idx: Index) -> String {
+        SetCmd::new("SIF")
+            .val(idx)
+            .val(&self.name)
+            .opt(&self.quick_key)
+            .opt(&self.hold_time)
+            .flag(self.lockout)
+            .opt(&self.modulation)
+            .flag(self.attenuator)
+            .flag(self.control_channel_only)
+            .rsv(2)
+            .opt(&self.start_key)
+            .geofence(&self.geofence)
+            .rsv(1)
+            .opt(&self.mot_band_type)
+            .opt(&self.edacs_type)
+            .opt(&self.p25_waiting_ms)
+            .rsv(1)
+            .build()
+    }
+}
+
+impl TrunkFreqRecord {
+    /// TFQ set: index, frequency, LCN, lockout, rsv, number tag, volume offset, rsv, color code.
+    pub fn to_set(&self, idx: Index) -> String {
+        SetCmd::new("TFQ")
+            .val(idx)
+            .opt(&self.freq)
+            .opt(&self.lcn)
+            .flag(self.lockout)
+            .rsv(1)
+            .opt(&self.number_tag)
+            .opt(&self.vol_offset)
+            .rsv(1)
+            .opt(&self.color_code)
+            .build()
+    }
+}
+
+impl MotBandPlan {
+    /// MCP set: site index, then lower/upper/step/offset for each of the six entries.
+    /// Unused entries are sent empty, which leaves them unchanged.
+    pub fn to_set(&self, site: Index) -> String {
+        let mut cmd = SetCmd::new("MCP").val(site);
+        for band in &self.bands {
+            cmd = match band {
+                Some(b) => cmd.val(b.lower).val(b.upper).val(b.step_code).val(b.offset),
+                None => cmd.rsv(4),
+            };
+        }
+        cmd.build()
+    }
+}
+
+impl P25BandPlan {
+    /// ABP set: site index, then hex base and spacing for each of the sixteen entries.
+    /// Unused entries are sent empty, which leaves them unchanged.
+    pub fn to_set(&self, site: Index) -> String {
+        let mut cmd = SetCmd::new("ABP").val(site);
+        for band in &self.bands {
+            cmd = match band {
+                Some(b) => cmd.val(format!("{:X}", b.base_hz / 5)).val(format!("{:X}", b.spacing_hz / 125)),
+                None => cmd.rsv(2),
+            };
+        }
+        cmd.build()
+    }
+}
+
 /// Run a create/append command and return the new index (-1 -> OutOfMemory).
 fn alloc<S: Scanner>(sc: &mut S, cmd: &'static str, line: &str) -> Result<Index, Error> {
     parse_index_reply(cmd, &sc.send(line)?)?.ok_or(Error::OutOfMemory(cmd))
 }
 
-/// Recreate a conventional system on the scanner. Call in Program Mode.
+/// Recreate a system on the scanner, conventional or trunked. Call in Program Mode.
 /// Returns the new system index.
-pub fn write_conventional<S: Scanner>(sc: &mut S, sys: &System) -> Result<Index, Error> {
-    let groups = match &sys.kind {
-        SystemKind::Conventional { groups } => groups,
-        SystemKind::Trunked { .. } => return Err(Error::WrongSystemKind),
-    };
+pub fn write_system<S: Scanner>(sc: &mut S, sys: &System) -> Result<Index, Error> {
     // The protect bit can only be set at creation time
     let protect = if sys.info.protect == Some(true) { 1 } else { 0 };
     let new_sys = alloc(sc, "CSY", &format!("CSY,{},{protect}", sys.info.sys_type))?;
     expect_ok("SIN", &sc.send(&sys.info.to_set(new_sys))?)?;
 
-    for group in groups {
-        let new_grp = alloc(sc, "AGC", &format!("AGC,{new_sys}"))?;
-        expect_ok("GIN", &sc.send(&group.info.to_set(new_grp))?)?;
-        for ch in &group.channels {
-            let new_ch = alloc(sc, "ACC", &format!("ACC,{new_grp}"))?;
-            expect_ok("CIN", &sc.send(&ch.info.to_set(new_ch))?)?;
+    match &sys.kind {
+        SystemKind::Conventional { groups } => {
+            for group in groups {
+                let new_grp = alloc(sc, "AGC", &format!("AGC,{new_sys}"))?;
+                expect_ok("GIN", &sc.send(&group.info.to_set(new_grp))?)?;
+                for ch in &group.channels {
+                    let new_ch = alloc(sc, "ACC", &format!("ACC,{new_grp}"))?;
+                    expect_ok("CIN", &sc.send(&ch.info.to_set(new_ch))?)?;
+                }
+            }
+        }
+        SystemKind::Trunked { trunk, sites, tgid_groups } => {
+            expect_ok("TRN", &sc.send(&trunk.to_set(new_sys))?)?;
+            for site in sites {
+                let new_site = alloc(sc, "AST", &format!("AST,{new_sys},"))?;
+                // The band type must be set before a custom band plan is accepted.
+                expect_ok("SIF", &sc.send(&site.info.to_set(new_site))?)?;
+                match &site.band_plan {
+                    Some(BandPlan::Motorola(plan)) => expect_ok("MCP", &sc.send(&plan.to_set(new_site))?)?,
+                    Some(BandPlan::P25(plan)) => expect_ok("ABP", &sc.send(&plan.to_set(new_site))?)?,
+                    None => {}
+                }
+                for freq in &site.frequencies {
+                    let new_freq = alloc(sc, "ACC", &format!("ACC,{new_site}"))?;
+                    expect_ok("TFQ", &sc.send(&freq.info.to_set(new_freq))?)?;
+                }
+            }
+            for group in tgid_groups {
+                let new_grp = alloc(sc, "AGT", &format!("AGT,{new_sys}"))?;
+                expect_ok("GIN", &sc.send(&group.info.to_set(new_grp))?)?;
+                for tgid in &group.tgids {
+                    let new_tgid = alloc(sc, "ACT", &format!("ACT,{new_grp}"))?;
+                    expect_ok("TIN", &sc.send(&tgid.info.to_set(new_tgid))?)?;
+                }
+            }
         }
     }
     Ok(new_sys)
+}
+
+/// Recreate a conventional system on the scanner. Call in Program Mode.
+/// Returns the new system index.
+pub fn write_conventional<S: Scanner>(sc: &mut S, sys: &System) -> Result<Index, Error> {
+    match sys.kind {
+        SystemKind::Conventional { .. } => write_system(sc, sys),
+        SystemKind::Trunked { .. } => Err(Error::WrongSystemKind),
+    }
+}
+
+/// Delete every system (and everything under it) from the scanner. Call in Program Mode.
+pub fn delete_all_systems<S: Scanner>(sc: &mut S) -> Result<(), Error> {
+    let head = parse_index_reply("SIH", &sc.send("SIH")?)?;
+    let systems = walk_list(sc, head, |sc, idx| {
+        let rec = SystemRecord::parse(&sc.send(&format!("SIN,{idx}"))?)?;
+        let fwd = rec.links.fwd;
+        Ok(((), fwd))
+    })?;
+    for (idx, ()) in systems {
+        expect_ok("DSY", &sc.send(&format!("DSY,{idx}"))?)?;
+    }
+    Ok(())
+}
+
+/// Replace the scanner's systems with `db`: deletes every existing system, then writes each
+/// system in order. Call in Program Mode. Calls `progress(done, total)` before the first
+/// system is written and after each one. Settings outside the scan database are untouched.
+///
+/// The old systems are gone once this starts, so a failure part-way leaves the scanner
+/// with only the systems written so far.
+pub fn write_database_with_progress<S: Scanner>(
+    sc: &mut S,
+    db: &ScanDatabase,
+    mut progress: impl FnMut(usize, usize),
+) -> Result<(), Error> {
+    // Refuse before deleting anything if it cannot possibly fit.
+    if db.blocks_used() > MAX_BLOCKS {
+        return Err(Error::OutOfMemory("upload"));
+    }
+    delete_all_systems(sc)?;
+    let total = db.systems.len();
+    progress(0, total);
+    for (i, sys) in db.systems.iter().enumerate() {
+        write_system(sc, sys)?;
+        progress(i + 1, total);
+    }
+    Ok(())
+}
+
+/// Like [`write_database_with_progress`], without progress reporting.
+pub fn write_database<S: Scanner>(sc: &mut S, db: &ScanDatabase) -> Result<(), Error> {
+    write_database_with_progress(sc, db, |_, _| {})
 }
 
 #[cfg(test)]
@@ -1851,6 +2032,40 @@ mod tests {
         fn send(&mut self, cmd: &str) -> Result<String, Error> {
             Ok(self.0.get(cmd).copied().unwrap_or("ERR").to_string())
         }
+    }
+
+    /// Records every command; hands out increasing indices for create commands.
+    struct Recorder {
+        sent: Vec<String>,
+        next: u32,
+    }
+
+    impl Scanner for Recorder {
+        fn send(&mut self, cmd: &str) -> Result<String, Error> {
+            self.sent.push(cmd.to_string());
+            let name = cmd.split(',').next().unwrap();
+            Ok(match name {
+                "SIH" => "SIH,-1".to_string(),
+                "CSY" | "AGC" | "AGT" | "AST" | "ACC" | "ACT" => {
+                    self.next += 1;
+                    format!("{name},{}", self.next)
+                }
+                _ => format!("{name},OK"),
+            })
+        }
+    }
+
+    #[test]
+    fn write_database_creates_every_system() {
+        let db = ScanDatabase::new_placeholder();
+        let mut sc = Recorder { sent: vec![], next: 0 };
+        let mut last = (0, 0);
+        write_database_with_progress(&mut sc, &db, |d, t| last = (d, t)).unwrap();
+        assert_eq!(last, (db.systems.len(), db.systems.len()));
+        assert_eq!(sc.sent[0], "SIH");
+        assert!(sc.sent.iter().any(|c| c.starts_with("CSY,")));
+        assert!(sc.sent.iter().any(|c| c.starts_with("SIN,")));
+        assert!(sc.sent.iter().any(|c| c.starts_with("CIN,")));
     }
 
     #[test]

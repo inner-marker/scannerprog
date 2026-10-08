@@ -1,4 +1,5 @@
 use dioxus::prelude::*;
+use crate::confirm::confirm;
 use std::fmt::Display;
 use std::str::FromStr;
 
@@ -447,7 +448,7 @@ fn EditButton(mut editing: Signal<bool>, on_toggle: EventHandler<bool>) -> Eleme
 
 /// Removes an item. Shown next to each [`EditButton`].
 #[component]
-fn DeleteButton(on_delete: EventHandler<()>) -> Element {
+fn DeleteButton(what: String, on_delete: EventHandler<()>) -> Element {
     rsx! {
         button {
             class: "delete-button",
@@ -456,7 +457,7 @@ fn DeleteButton(on_delete: EventHandler<()>) -> Element {
             onclick: move |evt| {
                 evt.prevent_default();
                 evt.stop_propagation();
-                on_delete.call(());
+                confirm(format!("Delete this {what}?"), "Delete", move || on_delete.call(()));
             },
             "X"
         }
@@ -565,6 +566,7 @@ fn SystemView(si: usize, system: System) -> Element {
                     },
                 }
                 DeleteButton {
+                    what: "system and everything in it".to_string(),
                     on_delete: move |_| delete_item("systems".to_string(), si, |db| {
                         if si < db.systems.len() {
                             db.systems.remove(si);
@@ -916,6 +918,7 @@ fn ChannelGroupView(si: usize, gi: usize, group: ChannelGroup) -> Element {
                     },
                 }
                 DeleteButton {
+                    what: "channel group and its channels".to_string(),
                     on_delete: move |_| delete_item(format!("s{si}/groups"), gi, |db| {
                         if let Some(g) = groups_mut(db, si).filter(|g| gi < g.len()) {
                             g.remove(gi);
@@ -998,6 +1001,7 @@ fn ChannelRow(si: usize, gi: usize, ci: usize, channel: Channel) -> Element {
                     },
                 }
                 DeleteButton {
+                    what: "channel".to_string(),
                     on_delete: move |_| delete_item(format!("s{si}/g{gi}/channels"), ci, |db| {
                         let channels = groups_mut(db, si)
                             .and_then(|g| g.get_mut(gi))
@@ -1045,6 +1049,7 @@ fn SiteView(si: usize, sti: usize, site: Site) -> Element {
                     },
                 }
                 DeleteButton {
+                    what: "site and its frequencies".to_string(),
                     on_delete: move |_| delete_item(format!("s{si}/sites"), sti, |db| {
                         if let Some(s) = sites_mut(db, si).filter(|s| sti < s.len()) {
                             s.remove(sti);
@@ -1115,6 +1120,7 @@ fn TrunkFreqRow(si: usize, sti: usize, fi: usize, freq: TrunkFreq) -> Element {
                     },
                 }
                 DeleteButton {
+                    what: "frequency".to_string(),
                     on_delete: move |_| delete_item(format!("s{si}/t{sti}/freqs"), fi, |db| {
                         let freqs = sites_mut(db, si)
                             .and_then(|s| s.get_mut(sti))
@@ -1157,6 +1163,7 @@ fn TgidGroupView(si: usize, gi: usize, group: TgidGroup) -> Element {
                     },
                 }
                 DeleteButton {
+                    what: "talkgroup group and its talkgroups".to_string(),
                     on_delete: move |_| delete_item(format!("s{si}/tgroups"), gi, |db| {
                         if let Some(g) = tgid_groups_mut(db, si).filter(|g| gi < g.len()) {
                             g.remove(gi);
@@ -1232,6 +1239,7 @@ fn TgidRow(si: usize, gi: usize, ti: usize, tgid: TgidEntry) -> Element {
                     },
                 }
                 DeleteButton {
+                    what: "talkgroup".to_string(),
                     on_delete: move |_| delete_item(format!("s{si}/tg{gi}/tgids"), ti, |db| {
                         let tgids = tgid_groups_mut(db, si)
                             .and_then(|g| g.get_mut(gi))

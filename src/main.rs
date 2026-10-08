@@ -9,6 +9,7 @@ mod scanner_db;
 mod scanner_interaction;
 mod components;
 mod messages;
+mod confirm;
 
 
 fn main() {
@@ -19,7 +20,7 @@ fn main() {
 
     // Launch the desktop renderer with our window config
     dioxus::LaunchBuilder::desktop()
-        .with_cfg(Config::new().with_window(window))
+        .with_cfg(Config::new().with_window(window).with_menu(None))
         .launch(components::App);
 
 
