@@ -2,13 +2,15 @@
 
 ## Completed
 
-- [x] Detect a Uniden scanner
-- [x] Read the basic scanner information
 
 ## To-Do
 
+- [x] Detect a Uniden scanner (USB vid `0x1964`)
+- [x] Read the basic scanner information
+
 ### Database Management
 
+- [x] Read the database from the scanner
 - [ ] Save/Load database to/from a `.ron` file
 - [ ] Edit the database locally
 - [ ] Validate edits to the database

@@ -61,7 +61,7 @@ impl From<std::io::Error> for Error {
 
 /// Handle to a record in the scanner's memory pool (1 to about 45000).
 /// "-1" on the wire (end of list / none) is represented as Option::None.
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub struct Index(pub u16);
 
 impl fmt::Display for Index {
@@ -203,6 +203,12 @@ wire_enum! {
     }
 }
 
+impl Default for SystemType {
+    fn default() -> Self {
+        SystemType::Conventional
+    }
+}
+
 impl SystemType {
     /// Trunked systems have sites, trunk frequencies and TGID groups.
     pub fn is_trunked(self) -> bool {
@@ -218,6 +224,12 @@ wire_enum! {
 wire_enum! {
     /// GIN group type.
     GroupType { Channel = "C", Tgid = "T" }
+}
+
+impl Default for GroupType {
+    fn default() -> Self {
+        GroupType::Channel
+    }
 }
 
 wire_enum! {
@@ -731,7 +743,7 @@ pub fn expect_ok(cmd: &'static str, reply: &str) -> Result<(), Error> {
 }
 
 /// One system, from SIN.
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Default)]
 pub struct SystemRecord {
     pub sys_type: SystemType, // always present, even when protected
     pub name: Name,
@@ -1015,7 +1027,7 @@ impl TrunkFreqRecord {
 }
 
 /// A channel group or TGID group, from GIN.
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Default)]
 pub struct GroupRecord {
     pub group_type: GroupType,
     pub name: Name,
@@ -1048,7 +1060,7 @@ impl GroupRecord {
 }
 
 /// A conventional channel, from CIN.
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Default)]
 pub struct ChannelRecord {
     pub name: Name,
     pub freq: Option<Freq>,
@@ -1247,6 +1259,28 @@ impl ScanDatabase {
                 }
             })
             .sum()
+    }
+
+    /// Make a new placeholder database 
+    /// 
+    /// The database is initialized with one system, one group, and one channel, all placeholder entries.
+    pub fn new_placeholder() -> Self {
+        Self {
+            systems: vec![System {
+                index: Index::default(),
+                info: SystemRecord::default(),
+                kind: SystemKind::Conventional {
+                    groups: vec![ChannelGroup {
+                        index: Index::default(),
+                        info: GroupRecord::default(),
+                        channels: vec![Channel {
+                            index: Index::default(),
+                            info: ChannelRecord::default(),
+                        }],
+                    }],
+                },
+            }],
+        }
     }
 }
 

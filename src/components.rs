@@ -1,7 +1,7 @@
 use dioxus::prelude::*;
 use std::time::Duration;
 
-use crate::database_view::DatabaseView;
+use crate::database_view::{DatabaseView, MemoryUsage};
 use crate::scanner_interaction::{
     detect_scanner, download_database, save_database_ron, DownloadStatus, DOWNLOAD_ACTIVE, DOWNLOAD_STATUS, SCANNER_INFO, SCAN_DATABASE,
     SCANNER_USB_DEVICE,
@@ -9,19 +9,28 @@ use crate::scanner_interaction::{
 
 const MAIN_CSS: Asset = asset!("/assets/main.css");
 
+#[derive(Clone, Copy, PartialEq)]
+enum ConnectionStatus {
+    Connected,
+    Searching,
+    Error,
+}
+
 #[derive(Routable, Clone, PartialEq)]
 pub enum Route {
     #[layout(NavBar)]
         #[route("/")]
         Home {},
         #[route("/database")]
-        Database {},
+        DatabasePage {},
 }
 
 
 #[component]
 pub fn App() -> Element {
     let mut ports_seen = use_signal(String::new);
+    let mut connection_status = use_signal(|| ConnectionStatus::Searching);
+    use_context_provider(|| connection_status);
 
     // A loop to continuously check for connected scanners and update the UI accordingly.
     use_future(move || async move {
@@ -33,12 +42,21 @@ pub fn App() -> Element {
                 continue;
             }
             let detection = match tokio::task::spawn_blocking(detect_scanner).await {
-                Ok(Ok(detection)) => Some(detection),
+                Ok(Ok(detection)) => {
+                    connection_status.set(if detection.scanner.is_some() {
+                        ConnectionStatus::Connected
+                    } else {
+                        ConnectionStatus::Searching
+                    });
+                    Some(detection)
+                }
                 Ok(Err(error)) => {
+                    connection_status.set(ConnectionStatus::Error);
                     eprintln!("Failed to scan serial ports: {error}");
                     None
                 }
                 Err(error) => {
+                    connection_status.set(ConnectionStatus::Error);
                     eprintln!("Scanner detection task failed: {error}");
                     None
                 }
@@ -75,24 +93,21 @@ pub fn App() -> Element {
 
 #[component]
 fn NavBar() -> Element {
-    let connected = SCANNER_INFO.read().is_some();
-    let nav = navigator();
-
-    // Leave the Database page as soon as the scanner goes away.
-    use_effect(move || {
-        let connected = SCANNER_INFO.read().is_some();
-        if !connected && router().current::<Route>() == (Route::Database {}) {
-            nav.replace(Route::Home {});
-        }
-    });
+    let connection_status = use_context::<Signal<ConnectionStatus>>();
+    let (status_label, status_class) = match connection_status() {
+        ConnectionStatus::Connected => ("Connected", "connection-connected"),
+        ConnectionStatus::Searching => ("Searching...", "connection-searching"),
+        ConnectionStatus::Error => ("Error", "connection-error"),
+    };
 
     rsx! {
         nav { id: "navbar",
             Link { to: Route::Home {}, active_class: "active", "Home" }
-            if connected {
-                Link { to: Route::Database {}, active_class: "active", "Database" }
-            } else {
-                span { class: "disabled", title: "No scanner connected", "Database" }
+            Link { to: Route::DatabasePage {}, active_class: "active", "Database" }
+            span {
+                class: "connection-indicator {status_class}",
+                title: "Connection status",
+                "Connection: {status_label}"
             }
         }
         Outlet::<Route> {}
@@ -101,91 +116,132 @@ fn NavBar() -> Element {
 
 #[component]
 fn Home() -> Element {
-    rsx! {
-        main {
-            match *SCANNER_USB_DEVICE.read() {
-                Some(_) => rsx! {
-                    p { "USB Device Information" }
-                    ul {
-                        li { "Vendor ID: {SCANNER_USB_DEVICE.read().as_ref().map(|d| d.vendor_id.clone()).unwrap_or_default():#04x}" } // as hex
-                        li { "Product ID: {SCANNER_USB_DEVICE.read().as_ref().map(|d| d.product_id.clone()).unwrap_or_default():#04x}" } // as hex
-                        li { "Manufacturer: {SCANNER_USB_DEVICE.read().as_ref().map(|d| d.manufacturer.clone()).unwrap_or_default():?}" }
-                        li { "Product: {SCANNER_USB_DEVICE.read().as_ref().map(|d| d.product.clone()).unwrap_or_default():?}" }
-                        li { "Serial Number: {SCANNER_USB_DEVICE.read().as_ref().map(|d| d.serial_number.clone()).unwrap_or_default():?}" }
-                    }
+    let usb_device = SCANNER_USB_DEVICE.read().clone();
+    let scanner = SCANNER_INFO.read().clone();
 
-                    p { "Scanner information from the connected USB device." }
-                    ul {
-                        li { "Model: {SCANNER_INFO.read().as_ref().map(|s| s.model.clone()).unwrap_or_default():?}" }
-                        li { "Firmware: {SCANNER_INFO.read().as_ref().map(|s| s.firmware.clone()).unwrap_or_default():?}" }
+    rsx! {
+        main { id: "home",
+            h1 { "Scanner Information" }
+            if usb_device.is_some() || scanner.is_some() {
+                table {
+                    thead {
+                        tr {
+                            th { scope: "col", "Property" }
+                            th { scope: "col", "Value" }
+                        }
                     }
-                },
-                None => {
-                    rsx! {
-                        p { "No USB scanner detected. Searching for scanners..." }
+                    tbody {
+                        if let Some(device) = usb_device {
+                            tr { class: "section-heading",
+                                th { scope: "rowgroup", colspan: "2", "USB Device" }
+                            }
+                            tr {
+                                th { scope: "row", "Vendor ID" }
+                                td { "{device.vendor_id:#06x}" }
+                            }
+                            tr {
+                                th { scope: "row", "Product ID" }
+                                td { "{device.product_id:#06x}" }
+                            }
+                            tr {
+                                th { scope: "row", "Manufacturer" }
+                                td { {device.manufacturer.as_deref().unwrap_or("Not reported")} }
+                            }
+                            tr {
+                                th { scope: "row", "Product" }
+                                td { {device.product.as_deref().unwrap_or("Not reported")} }
+                            }
+                            tr {
+                                th { scope: "row", "Serial Number" }
+                                td { {device.serial_number.as_deref().unwrap_or("Not reported")} }
+                            }
+                        }
+                        if let Some(info) = scanner {
+                            tr { class: "section-heading",
+                                th { scope: "rowgroup", colspan: "2", "Scanner" }
+                            }
+                            tr {
+                                th { scope: "row", "Model" }
+                                td { "{info.model}" }
+                            }
+                            tr {
+                                th { scope: "row", "Firmware" }
+                                td { "{info.firmware}" }
+                            }
+                        }
                     }
                 }
+            } else {
+                p { "No USB scanner detected. Searching for scanners..." }
             }
         }
     }
 }
 
 #[component]
-fn Database() -> Element {
-    let mut save_message = use_signal(String::new);
+fn Toolbar(mut save_message: Signal<String>) -> Element {
     rsx! {
-        main {
-            h1 { "Database" }
-            div {
-                button {
-                    id: "download-from-scanner",
-                    disabled: matches!(*DOWNLOAD_STATUS.read(), DownloadStatus::InProgress { .. }),
-                    onclick: move |_| {
-                        spawn(download_database());
-                    },
-                    title: "Download the database from the connected scanner.",
-                    "Download"
-                }
+        div { id: "toolbar",
+            button {
+                id: "download-from-scanner",
+                disabled: matches!(*DOWNLOAD_STATUS.read(), DownloadStatus::InProgress { .. }),
+                onclick: move |_| {
+                    spawn(download_database());
+                },
+                title: "Download the database from the connected scanner.",
+                "Download"
             }
+            button {
+                id: "save-ron",
+                disabled: SCAN_DATABASE.read().is_none(),
+                onclick: move |_| {
+                    let model = SCANNER_INFO
+                        .peek()
+                        .as_ref()
+                        .map(|s| s.model.clone())
+                        .unwrap_or_else(|| "Scanner".into());
+                    let result = match SCAN_DATABASE.peek().as_ref() {
+                        Some(db) => save_database_ron(db, &model),
+                        None => Err("Nothing to save".to_string()),
+                    };
+                    save_message.set(match result {
+                        Ok(path) => format!("Saved to {}", path.display()),
+                        Err(error) => format!("Save failed: {error}"),
+                    });
+                },
+                title: "Save the database to a file.",
+                "Save to File"
+            }
+            button { title: "Placeholder action 3", "Action 3" }
+            MemoryUsage {}
+        }
+    }
+}
 
-            if SCAN_DATABASE.read().is_some() {
-                div {
-                    button {
-                        id: "save-ron",
-                        onclick: move |_| {
-                            let model = SCANNER_INFO
-                                .peek()
-                                .as_ref()
-                                .map(|s| s.model.clone())
-                                .unwrap_or_else(|| "Scanner".into());
-                            let result = match SCAN_DATABASE.peek().as_ref() {
-                                Some(db) => save_database_ron(db, &model),
-                                None => Err("Nothing to save".to_string()),
-                            };
-                            save_message.set(match result {
-                                Ok(path) => format!("Saved to {}", path.display()),
-                                Err(error) => format!("Save failed: {error}"),
-                            });
-                        },
-                        "Save as RON"
-                    }
-                    " {save_message}"
-                }
+#[component]
+fn DatabasePage() -> Element {
+    let save_message = use_signal(String::new);
+    rsx! {
+        Toolbar { save_message }
+        main {
+            if !save_message.read().is_empty() {
+                p { "{save_message}" }
             }
 
             div {
                 match *DOWNLOAD_STATUS.read() {
-                    DownloadStatus::NotStarted => rsx! { p { "Download not started." } },
+                    DownloadStatus::NotStarted => rsx! { "Download not started." },
                     DownloadStatus::InProgress { done, total } => rsx! {
                         p { "Download in progress... ({done}/{total} systems)" }
                     },
                     DownloadStatus::Completed => rsx! {
                         p { "Download completed successfully." }
-                        DatabaseView {}
                     },
                     DownloadStatus::Failed(ref error) => rsx! { p { "Download failed: {error}" } },
                 }
             }
+
+            DatabaseView {}
         }
     }
 }

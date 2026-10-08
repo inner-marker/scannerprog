@@ -125,7 +125,7 @@ pub enum DownloadStatus {
 pub static DOWNLOAD_STATUS: GlobalSignal<DownloadStatus> = Signal::global(|| DownloadStatus::NotStarted);
 
 /// The most recently downloaded scan database.
-pub static SCAN_DATABASE: GlobalSignal<Option<ScanDatabase>> = Signal::global(|| None);
+pub static SCAN_DATABASE: GlobalSignal<Option<ScanDatabase>> = Signal::global(|| Some(ScanDatabase::new_placeholder()));
 
 /// Memory statistics reported by the scanner (RMB, MEM) at the last download, if it answered.
 pub static SCANNER_MEMORY: GlobalSignal<Option<ScannerMemory>> = Signal::global(|| None);
@@ -206,6 +206,12 @@ pub async fn download_database() {
             *SCANNER_MEMORY.write() = memory;
             *SCAN_DATABASE.write() = Some(db);
             *DOWNLOAD_STATUS.write() = DownloadStatus::Completed;
+        }
+        Ok(Err(Error::Scanner { cmd, reply })) if cmd == "PRG" => {
+            *DOWNLOAD_STATUS.write() = DownloadStatus::Failed(format!(
+                "scanner rejected PRG: {reply}. The scanner refuses Program Mode while it is in a menu, \
+                 direct entry, or Quick Save. Return it to the normal scan/hold screen and try again."
+            ));
         }
         Ok(Err(e)) => *DOWNLOAD_STATUS.write() = DownloadStatus::Failed(e.to_string()),
         Err(e) => *DOWNLOAD_STATUS.write() = DownloadStatus::Failed(e.to_string()),

@@ -1,7 +1,9 @@
 use dioxus::prelude::*;
 
-use crate::scanner_db::{BandPlan, Freq, MAX_BLOCKS, Modulation, ChannelGroup, Site, System, SystemKind, TgidGroup};
+use crate::scanner_db::{BandPlan, Freq, GroupRecord, KeyAssignment, MAX_BLOCKS, Modulation, ChannelGroup, Site, System, SystemKind, SystemRecord, SystemType, TgidGroup, TrunkRecord};
 use crate::scanner_interaction::{SCANNER_MEMORY, SCAN_DATABASE};
+
+const EDIT_ICON: Asset = asset!("/assets/icons/icons8-edit-pencil-24.svg");
 
 fn text(v: String) -> Element {
     rsx! { input { r#type: "text", value: "{v}", disabled: true } }
@@ -48,6 +50,41 @@ fn modulation_select(v: &Option<Modulation>) -> Element {
     }
 }
 
+
+/// Placeholder edit button shown at the end of each system, group and row.
+#[component]
+fn EditButton() -> Element {
+    rsx! {
+        button {
+            class: "edit-button",
+            title: "Edit",
+            // Inside a <summary>, a click would otherwise toggle the <details>.
+            onclick: move |evt| {
+                evt.prevent_default();
+                evt.stop_propagation();
+            },
+            img { src: EDIT_ICON, alt: "Edit" }
+        }
+    }
+}
+
+/// Memory used by the current database, shown at the right end of the toolbar.
+#[component]
+pub fn MemoryUsage() -> Element {
+    let db = SCAN_DATABASE.read();
+    let Some(db) = db.as_ref() else {
+        return rsx! {};
+    };
+    let used = db.blocks_used();
+    let percent = used as f64 / MAX_BLOCKS as f64 * 100.0;
+    rsx! {
+        span { id: "memory-usage",
+            "Memory used: {used} / {MAX_BLOCKS} blocks ({percent:.1}%) "
+            meter { min: 0, max: MAX_BLOCKS as f64, value: used as f64 }
+        }
+    }
+}
+
 /// The downloaded scan database as a collapsible tree.
 #[component]
 pub fn DatabaseView() -> Element {
@@ -55,24 +92,9 @@ pub fn DatabaseView() -> Element {
     let Some(db) = db.as_ref() else {
         return rsx! {};
     };
-    let used = db.blocks_used();
-    let (systems, sites, channels) = db.counts();
-    let percent = used as f64 / MAX_BLOCKS as f64 * 100.0;
+    // let (systems, sites, channels) = db.counts();
     rsx! {
         div { id: "database-view",
-            p { id: "memory-usage",
-                "Memory used: {used} / {MAX_BLOCKS} blocks ({percent:.1}%) "
-                meter { min: 0, max: MAX_BLOCKS as f64, value: used as f64 }
-            }
-            if let Some(mem) = SCANNER_MEMORY.read().as_ref() {
-                p { id: "scanner-memory-usage",
-                    "Scanner reports: {mem.percent_used}% memory used, {mem.free_blocks} blocks free "
-                    "(systems {mem.systems}, sites {mem.sites}, channels {mem.channels}, location alerts {mem.location_alerts}); as of the last download"
-                }
-                p {
-                    "Downloaded here: systems {systems}, sites {sites}, channels/talkgroups {channels}"
-                }
-            }
             h2 { "Systems ({db.systems.len()})" }
             for system in db.systems.iter() {
                 SystemView { system: system.clone() }
@@ -85,12 +107,20 @@ pub fn DatabaseView() -> Element {
 fn SystemView(system: System) -> Element {
     let name = system.info.name.to_string();
     let sys_type = format!("{:?}", system.info.sys_type);
+    let settings = match (system.info.sys_type, &system.kind) {
+        (SystemType::P25Standard | SystemType::P25OneFreq, SystemKind::Trunked { trunk, .. }) => rsx! {
+            P25SystemSettingsView { info: system.info.clone(), trunk: trunk.clone() }
+        },
+        _ => rsx! { SystemSettingsView { info: system.info.clone() } },
+    };
     rsx! {
         details {
             summary {
                 {text(name)}
                 " ({sys_type})"
+                EditButton {}
             }
+            {settings}
             match system.kind {
                 SystemKind::Conventional { groups } => rsx! {
                     for group in groups {
@@ -110,6 +140,183 @@ fn SystemView(system: System) -> Element {
     }
 }
 
+/// A system's quick key, startup key, lockout, hold/delay times, AGC and digital waiting settings.
+#[component]
+fn SystemSettingsView(info: SystemRecord) -> Element {
+    let key = |k: &Option<KeyAssignment>| match k {
+        Some(KeyAssignment::Key(n)) => n.to_string(),
+        _ => "None".to_string(),
+    };
+    rsx! {
+        details {
+            summary {
+                "Settings"
+                EditButton {}
+            }
+            table {
+                thead {
+                    tr {
+                        th { "Setting" }
+                        th { "Value" }
+                    }
+                }
+                tbody {
+                    tr {
+                        td { "Quick Key" }
+                        td { {text(key(&info.quick_key))} }
+                    }
+                    tr {
+                        td { "Startup Key" }
+                        td { {text(key(&info.start_key))} }
+                    }
+                    tr {
+                        td { "Lockout" }
+                        td { {checkbox(&info.lockout)} }
+                    }
+                    tr {
+                        td { "Hold Time" }
+                        td {
+                            {opt_number(&info.hold_time)}
+                            " s"
+                        }
+                    }
+                    tr {
+                        td { "Delay Time" }
+                        td {
+                            {opt_text(&info.delay)}
+                            " s"
+                        }
+                    }
+                    tr {
+                        td { "AGC Analog" }
+                        td { {checkbox(&info.agc_analog)} }
+                    }
+                    tr {
+                        td { "AGC Digital" }
+                        td { {checkbox(&info.agc_digital)} }
+                    }
+                    tr {
+                        td { "Digital Waiting" }
+                        td {
+                            {opt_number(&info.p25_waiting_ms)}
+                            " ms"
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// P25 system settings: number tag, ID scan/search, delay, priority ID scan, ID format and AGC.
+#[component]
+fn P25SystemSettingsView(info: SystemRecord, trunk: TrunkRecord) -> Element {
+    let id_mode = match trunk.id_search {
+        Some(true) => "ID Search",
+        _ => "ID Scan",
+    };
+    let id_format = match trunk.hex_ids {
+        Some(true) => "Hex",
+        _ => "Decimal",
+    };
+    rsx! {
+        details {
+            summary {
+                "Settings (P25)"
+                EditButton {}
+            }
+            table {
+                thead {
+                    tr {
+                        th { "Setting" }
+                        th { "Value" }
+                    }
+                }
+                tbody {
+                    tr {
+                        td { "Number Tag" }
+                        td { {opt_text(&info.number_tag)} }
+                    }
+                    tr {
+                        td { "ID Scan/Search" }
+                        td { {text(id_mode.to_string())} }
+                    }
+                    tr {
+                        td { "Delay Time" }
+                        td {
+                            {opt_text(&info.delay)}
+                            " s"
+                        }
+                    }
+                    tr {
+                        td { "Priority ID Scan" }
+                        td { {checkbox(&trunk.priority_id_scan)} }
+                    }
+                    tr {
+                        td { "ID Format" }
+                        td { {text(id_format.to_string())} }
+                    }
+                    tr {
+                        td { "AGC" }
+                        td { {checkbox(&info.agc_digital)} }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// A channel group's quick key, lockout and location (geofence) settings.
+#[component]
+fn GroupSettingsView(info: GroupRecord) -> Element {
+    let quick_key = match info.quick_key {
+        Some(KeyAssignment::Key(n)) => n.to_string(),
+        _ => "None".to_string(),
+    };
+    rsx! {
+        details {
+            summary {
+                "Settings"
+                EditButton {}
+            }
+            table {
+                thead {
+                    tr {
+                        th { "Setting" }
+                        th { "Value" }
+                    }
+                }
+                tbody {
+                    tr {
+                        td { "Quick Key" }
+                        td { {text(quick_key)} }
+                    }
+                    tr {
+                        td { "Lockout" }
+                        td { {checkbox(&info.lockout)} }
+                    }
+                    tr {
+                        td { "Latitude" }
+                        td { {opt_text(&info.geofence.latitude)} }
+                    }
+                    tr {
+                        td { "Longitude" }
+                        td { {opt_text(&info.geofence.longitude)} }
+                    }
+                    tr {
+                        td { "Range" }
+                        td { {opt_number(&info.geofence.range)} }
+                    }
+                    tr {
+                        td { "GPS Enable" }
+                        td { {checkbox(&info.geofence.enabled)} }
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[component]
 fn ChannelGroupView(group: ChannelGroup) -> Element {
     let name = group.info.name.to_string();
@@ -120,7 +327,9 @@ fn ChannelGroupView(group: ChannelGroup) -> Element {
                 "Group: "
                 {text(name)}
                 " ({count} channels)"
+                EditButton {}
             }
+            GroupSettingsView { info: group.info.clone() }
             table {
                 thead {
                     tr {
@@ -129,6 +338,7 @@ fn ChannelGroupView(group: ChannelGroup) -> Element {
                         th { "Modulation" }
                         th { "Tone" }
                         th { "Lockout" }
+                        th {}
                     }
                 }
                 tbody {
@@ -139,6 +349,7 @@ fn ChannelGroupView(group: ChannelGroup) -> Element {
                             td { {modulation_select(&channel.info.modulation)} }
                             td { {opt_text(&channel.info.tone)} }
                             td { {checkbox(&channel.info.lockout)} }
+                            td { EditButton {} }
                         }
                     }
                 }
@@ -162,6 +373,7 @@ fn SiteView(site: Site) -> Element {
                 "Site: "
                 {text(name)}
                 " ({count} frequencies, {plan})"
+                EditButton {}
             }
             table {
                 thead {
@@ -169,6 +381,7 @@ fn SiteView(site: Site) -> Element {
                         th { "Frequency" }
                         th { "LCN" }
                         th { "Lockout" }
+                        th {}
                     }
                 }
                 tbody {
@@ -177,6 +390,7 @@ fn SiteView(site: Site) -> Element {
                             td { {freq_input(&freq.info.freq)} }
                             td { {opt_number(&freq.info.lcn)} }
                             td { {checkbox(&freq.info.lockout)} }
+                            td { EditButton {} }
                         }
                     }
                 }
@@ -195,6 +409,7 @@ fn TgidGroupView(group: TgidGroup) -> Element {
                 "Talkgroups: "
                 {text(name)}
                 " ({count})"
+                EditButton {}
             }
             table {
                 thead {
@@ -203,6 +418,7 @@ fn TgidGroupView(group: TgidGroup) -> Element {
                         th { "TGID" }
                         th { "Lockout" }
                         th { "Priority" }
+                        th {}
                     }
                 }
                 tbody {
@@ -212,6 +428,7 @@ fn TgidGroupView(group: TgidGroup) -> Element {
                             td { {opt_text(&tgid.info.tgid)} }
                             td { {checkbox(&tgid.info.lockout)} }
                             td { {checkbox(&tgid.info.priority)} }
+                            td { EditButton {} }
                         }
                     }
                 }

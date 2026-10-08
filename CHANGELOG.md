@@ -1,5 +1,5 @@
-## [0.1.0] - Initial Release
+## [unreleased] - Initial Release
 
-- Initial detection of a Uniden scanner
-- Reading basic scanner information
-- Reads database from the scanner
+- [x] Detect a Uniden scanner
+- [x] Read the basic scanner information
+- [x] Read the database from the scanner

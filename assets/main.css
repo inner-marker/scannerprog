@@ -51,6 +51,7 @@ body {
     z-index: 100;
     display: flex;
     flex-direction: row;
+    align-items: center;
     padding: 12px 20px;
     background-color: #1a1d26;
     border-bottom: 1px solid #2d3140;
@@ -60,6 +61,28 @@ body {
     color: #5a5f6e;
     margin-right: 20px;
     cursor: not-allowed;
+}
+
+#navbar .connection-indicator {
+    margin-left: auto;
+    padding: 4px 10px;
+    border-radius: 3px;
+    font-weight: bold;
+}
+
+#navbar .connection-connected {
+    background-color: #2e7d32;
+    color: #ffffff;
+}
+
+#navbar .connection-searching {
+    background-color: #f9a825;
+    color: #171717;
+}
+
+#navbar .connection-error {
+    background-color: #c62828;
+    color: #ffffff;
 }
 
 #navbar a.active {
@@ -81,6 +104,36 @@ body {
 #navbar a:hover {
     cursor: pointer;
     color: #91a4d2;
+}
+
+/* Toolbar (below the navbar) */
+#toolbar {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    margin-bottom: 12px;
+    background-color: #151821;
+    border: 1px solid #2d3140;
+    border-radius: 3px;
+}
+
+#toolbar button {
+    background-color: #1a1d26;
+    color: #ffffff;
+    border: 1px solid #2d3140;
+    border-radius: 3px;
+    padding: 4px 12px;
+    cursor: pointer;
+}
+
+#toolbar button:hover {
+    background-color: #242838;
+}
+
+#toolbar #memory-usage {
+    margin-left: auto;
 }
 
 /* Blog page */
@@ -115,6 +168,50 @@ body {
     text-align: left;
 }
 
+#home table {
+    border-collapse: collapse;
+    margin-top: 12px;
+    min-width: min(100%, 520px);
+}
+
+#home th,
+#home td {
+    border: 1px solid #2d3140;
+    padding: 8px 12px;
+    text-align: left;
+}
+
+#home thead {
+    background-color: #1a1d26;
+}
+
+#home tbody .section-heading {
+    background-color: #202431;
+    color: #91a4d2;
+    text-align: left;
+}
+
+#database-view .system-line {
+    margin: 8px 0 8px 16px;
+}
+
+#database-view .add-system {
+    background-color: transparent;
+    color: #2ecc40;
+    border: 1px solid #2ecc40;
+    border-radius: 3px;
+    width: 28px;
+    height: 28px;
+    font-size: 20px;
+    font-weight: bold;
+    line-height: 1;
+    cursor: pointer;
+}
+
+#database-view .add-system:hover {
+    background-color: #1a3a20;
+}
+
 #database-view input[type="text"],
 #database-view input[type="number"],
 #database-view select {
@@ -126,4 +223,25 @@ body {
 
 #database-view input[type="number"] {
     width: 9em;
+}
+
+/* Edit buttons in the database view */
+#database-view .edit-button {
+    background: transparent;
+    border: none;
+    padding: 2px;
+    margin-left: 8px;
+    cursor: pointer;
+    vertical-align: middle;
+}
+
+#database-view .edit-button img {
+    width: 16px;
+    height: 16px;
+    filter: invert(1); /* the icon is black; the theme is dark */
+}
+
+#database-view .edit-button:hover {
+    background-color: #242838;
+    border-radius: 3px;
 }
