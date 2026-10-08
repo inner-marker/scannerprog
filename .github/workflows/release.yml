@@ -80,4 +80,9 @@ jobs:
       - name: Upload artifacts to release
         uses: softprops/action-gh-release@v2  # Attaches files to the release
         with:
-          files: target/dx/**/bundle/**/*  # Glob of bundled output
+          files: |
+            target/dx/**/bundle/linux/deb/*.deb
+            target/dx/**/bundle/linux/rpm/*.rpm
+            target/dx/**/bundle/linux/appimage/*.AppImage
+            target/dx/**/bundle/**/*.dmg
+            target/dx/**/bundle/**/*-setup.exe
