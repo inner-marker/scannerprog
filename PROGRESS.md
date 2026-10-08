@@ -12,6 +12,8 @@
 - [x] Save/Load database to/from a `.ron` file
 - [x] Edit the database locally
 - [x] Validate edits to the database
+  - Names
+  - Quick keys
 - [x] Write the database back to the scanner
 
 Additional Work:
