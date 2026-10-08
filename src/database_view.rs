@@ -7,7 +7,7 @@ use crate::scanner_db::{
     BandPlan, Channel, ChannelGroup, Freq, GroupRecord, GroupType, KeyAssignment, Modulation, Name, ScanDatabase, Site, System,
     SystemKind, SystemRecord, SiteRecord, TgidRecord, ChannelRecord, SystemType, TgidEntry, TgidGroup, TrunkFreq, TrunkRecord, MAX_BLOCKS,
 };
-use crate::scanner_interaction::SCAN_DATABASE;
+use crate::scanner_interaction::{SCAN_DATABASE, VALIDATION};
 
 const EDIT_ICON: Asset = asset!("/assets/icons/icons8-edit-pencil-24.svg");
 
@@ -195,6 +195,50 @@ fn update_db(f: impl FnOnce(&mut ScanDatabase)) {
     if let Some(db) = SCAN_DATABASE.write().as_mut() {
         f(db);
     }
+}
+
+/// Per list (identified by a path string): the delete counter and the lowest index affected by it.
+/// Rows share per-position edit state, so rows at or after a deleted index are remounted;
+/// rows before it, and every other list, keep their state and expanded/collapsed status.
+static DELETED: GlobalSignal<std::collections::HashMap<String, (u64, usize)>> =
+    Signal::global(Default::default);
+
+fn item_key(list: &str, i: usize) -> String {
+    match DELETED.read().get(list) {
+        Some(&(generation, from)) if i >= from => format!("{list}-{i}-{generation}"),
+        _ => format!("{list}-{i}"),
+    }
+}
+
+fn key_systems(i: usize) -> String {
+    item_key("systems", i)
+}
+fn key_groups(si: usize, i: usize) -> String {
+    item_key(&format!("s{si}/groups"), i)
+}
+fn key_sites(si: usize, i: usize) -> String {
+    item_key(&format!("s{si}/sites"), i)
+}
+fn key_tgid_groups(si: usize, i: usize) -> String {
+    item_key(&format!("s{si}/tgroups"), i)
+}
+fn key_channels(si: usize, gi: usize, i: usize) -> String {
+    item_key(&format!("s{si}/g{gi}/channels"), i)
+}
+fn key_freqs(si: usize, sti: usize, i: usize) -> String {
+    item_key(&format!("s{si}/t{sti}/freqs"), i)
+}
+fn key_tgids(si: usize, gi: usize, i: usize) -> String {
+    item_key(&format!("s{si}/tg{gi}/tgids"), i)
+}
+
+fn delete_item(list: String, i: usize, f: impl FnOnce(&mut ScanDatabase)) {
+    update_db(f);
+    let mut deleted = DELETED.write();
+    let entry = deleted.entry(list).or_insert((0, i));
+    *entry = (entry.0 + 1, i.min(entry.1));
+    *crate::components::UPLOAD_ENABLED.write() = false;
+    *VALIDATION.write() = None;
 }
 
 // ---- Adding new items. New items get a placeholder name and default settings. ----
@@ -390,11 +434,31 @@ fn EditButton(mut editing: Signal<bool>, on_toggle: EventHandler<bool>) -> Eleme
             onclick: move |evt| {
                 evt.prevent_default();
                 evt.stop_propagation();
+                *crate::components::UPLOAD_ENABLED.write() = false;
                 let now = !editing();
                 editing.set(now);
+                *VALIDATION.write() = None;
                 on_toggle.call(now);
             },
             img { src: EDIT_ICON, alt: "Edit" }
+        }
+    }
+}
+
+/// Removes an item. Shown next to each [`EditButton`].
+#[component]
+fn DeleteButton(on_delete: EventHandler<()>) -> Element {
+    rsx! {
+        button {
+            class: "delete-button",
+            title: "Delete",
+            // Inside a <summary>, a click would otherwise toggle the <details>.
+            onclick: move |evt| {
+                evt.prevent_default();
+                evt.stop_propagation();
+                on_delete.call(());
+            },
+            "X"
         }
     }
 }
@@ -417,6 +481,13 @@ pub fn MemoryUsage() -> Element {
 }
 
 /// The downloaded scan database as a collapsible tree.
+/// The <details> elements are not controlled by Dioxus, so open state is set on the DOM directly.
+fn set_all_open(open: bool) {
+    document::eval(&format!(
+        "document.querySelectorAll('#database-view details').forEach(d => d.open = {open});"
+    ));
+}
+
 #[component]
 pub fn DatabaseView() -> Element {
     let mut new_type = use_signal(|| SystemType::default().to_string());
@@ -425,8 +496,20 @@ pub fn DatabaseView() -> Element {
     rsx! {
         div { id: "database-view",
             h2 { "Systems ({systems.len()})" }
+            div { class: "expand-controls",
+                button {
+                    title: "Collapse every system, group and site",
+                    onclick: move |_| set_all_open(false),
+                    "Collapse All"
+                }
+                button {
+                    title: "Expand every system, group and site",
+                    onclick: move |_| set_all_open(true),
+                    "Expand All"
+                }
+            }
             for (si, system) in systems.into_iter().enumerate() {
-                SystemView { si, system }
+                SystemView { key: "{key_systems(si)}", si, system }
             }
             div { class: "add-row",
                 AddButton {
@@ -481,12 +564,19 @@ fn SystemView(si: usize, system: System) -> Element {
                         }
                     },
                 }
+                DeleteButton {
+                    on_delete: move |_| delete_item("systems".to_string(), si, |db| {
+                        if si < db.systems.len() {
+                            db.systems.remove(si);
+                        }
+                    }),
+                }
             }
             {settings}
             match system.kind {
                 SystemKind::Conventional { groups } => rsx! {
                     for (gi, group) in groups.into_iter().enumerate() {
-                        ChannelGroupView { si, gi, group }
+                        ChannelGroupView { key: "{key_groups(si, gi)}", si, gi, group }
                     }
                     AddButton {
                         label: "Add Group",
@@ -499,7 +589,7 @@ fn SystemView(si: usize, system: System) -> Element {
                 },
                 SystemKind::Trunked { sites, tgid_groups, .. } => rsx! {
                     for (sti, site) in sites.into_iter().enumerate() {
-                        SiteView { si, sti, site }
+                        SiteView { key: "{key_sites(si, sti)}", si, sti, site }
                     }
                     AddButton {
                         label: "Add Site",
@@ -510,7 +600,7 @@ fn SystemView(si: usize, system: System) -> Element {
                         }),
                     }
                     for (gi, group) in tgid_groups.into_iter().enumerate() {
-                        TgidGroupView { si, gi, group }
+                        TgidGroupView { key: "{key_tgid_groups(si, gi)}", si, gi, group }
                     }
                     AddButton {
                         label: "Add Talkgroup Group",
@@ -825,6 +915,13 @@ fn ChannelGroupView(si: usize, gi: usize, group: ChannelGroup) -> Element {
                         }
                     },
                 }
+                DeleteButton {
+                    on_delete: move |_| delete_item(format!("s{si}/groups"), gi, |db| {
+                        if let Some(g) = groups_mut(db, si).filter(|g| gi < g.len()) {
+                            g.remove(gi);
+                        }
+                    }),
+                }
             }
             GroupSettingsView { si, gi, info: group.info.clone() }
             table {
@@ -840,7 +937,7 @@ fn ChannelGroupView(si: usize, gi: usize, group: ChannelGroup) -> Element {
                 }
                 tbody {
                     for (ci, channel) in group.channels.into_iter().enumerate() {
-                        ChannelRow { si, gi, ci, channel }
+                        ChannelRow { key: "{key_channels(si, gi, ci)}", si, gi, ci, channel }
                     }
                 }
             }
@@ -900,6 +997,17 @@ fn ChannelRow(si: usize, gi: usize, ci: usize, channel: Channel) -> Element {
                         }
                     },
                 }
+                DeleteButton {
+                    on_delete: move |_| delete_item(format!("s{si}/g{gi}/channels"), ci, |db| {
+                        let channels = groups_mut(db, si)
+                            .and_then(|g| g.get_mut(gi))
+                            .map(|g| &mut g.channels)
+                            .filter(|c| ci < c.len());
+                        if let Some(c) = channels {
+                            c.remove(ci);
+                        }
+                    }),
+                }
             }
         }
     }
@@ -936,6 +1044,13 @@ fn SiteView(si: usize, sti: usize, site: Site) -> Element {
                         }
                     },
                 }
+                DeleteButton {
+                    on_delete: move |_| delete_item(format!("s{si}/sites"), sti, |db| {
+                        if let Some(s) = sites_mut(db, si).filter(|s| sti < s.len()) {
+                            s.remove(sti);
+                        }
+                    }),
+                }
             }
             table {
                 thead {
@@ -948,7 +1063,7 @@ fn SiteView(si: usize, sti: usize, site: Site) -> Element {
                 }
                 tbody {
                     for (fi, freq) in site.frequencies.into_iter().enumerate() {
-                        TrunkFreqRow { si, sti, fi, freq }
+                        TrunkFreqRow { key: "{key_freqs(si, sti, fi)}", si, sti, fi, freq }
                     }
                 }
             }
@@ -999,6 +1114,17 @@ fn TrunkFreqRow(si: usize, sti: usize, fi: usize, freq: TrunkFreq) -> Element {
                         }
                     },
                 }
+                DeleteButton {
+                    on_delete: move |_| delete_item(format!("s{si}/t{sti}/freqs"), fi, |db| {
+                        let freqs = sites_mut(db, si)
+                            .and_then(|s| s.get_mut(sti))
+                            .map(|s| &mut s.frequencies)
+                            .filter(|f| fi < f.len());
+                        if let Some(f) = freqs {
+                            f.remove(fi);
+                        }
+                    }),
+                }
             }
         }
     }
@@ -1030,6 +1156,13 @@ fn TgidGroupView(si: usize, gi: usize, group: TgidGroup) -> Element {
                         }
                     },
                 }
+                DeleteButton {
+                    on_delete: move |_| delete_item(format!("s{si}/tgroups"), gi, |db| {
+                        if let Some(g) = tgid_groups_mut(db, si).filter(|g| gi < g.len()) {
+                            g.remove(gi);
+                        }
+                    }),
+                }
             }
             table {
                 thead {
@@ -1043,7 +1176,7 @@ fn TgidGroupView(si: usize, gi: usize, group: TgidGroup) -> Element {
                 }
                 tbody {
                     for (ti, tgid) in group.tgids.into_iter().enumerate() {
-                        TgidRow { si, gi, ti, tgid }
+                        TgidRow { key: "{key_tgids(si, gi, ti)}", si, gi, ti, tgid }
                     }
                 }
             }
@@ -1097,6 +1230,17 @@ fn TgidRow(si: usize, gi: usize, ti: usize, tgid: TgidEntry) -> Element {
                             });
                         }
                     },
+                }
+                DeleteButton {
+                    on_delete: move |_| delete_item(format!("s{si}/tg{gi}/tgids"), ti, |db| {
+                        let tgids = tgid_groups_mut(db, si)
+                            .and_then(|g| g.get_mut(gi))
+                            .map(|g| &mut g.tgids)
+                            .filter(|t| ti < t.len());
+                        if let Some(t) = tgids {
+                            t.remove(ti);
+                        }
+                    }),
                 }
             }
         }

@@ -1,9 +1,11 @@
+use dioxus::html::g::prevent_default;
 use dioxus::prelude::*;
 use std::time::Duration;
 
 use crate::database_view::{DatabaseView, MemoryUsage};
+use crate::messages::{push_message, MessageCenter, MessageKind};
 use crate::scanner_interaction::{
-    default_save_dir, default_save_name, detect_scanner, download_database, load_database_ron, save_database_ron, DownloadStatus, DOWNLOAD_ACTIVE, DOWNLOAD_STATUS, SCANNER_INFO, SCANNER_MEMORY, SCAN_DATABASE,
+    default_save_dir, default_save_name, detect_scanner, download_database, load_database_ron, save_database_ron, DownloadStatus, DOWNLOAD_ACTIVE, DOWNLOAD_STATUS, SCANNER_INFO, SCANNER_MEMORY, SCAN_DATABASE, VALIDATION,
     SCANNER_USB_DEVICE,
 };
 
@@ -111,6 +113,7 @@ fn NavBar() -> Element {
             }
         }
         Outlet::<Route> {}
+        MessageCenter {}
     }
 }
 
@@ -178,18 +181,60 @@ fn Home() -> Element {
     }
 }
 
+/// global signal for tracking "Upload to Scanner" enablement
+/// 
+/// Defaults to `false`. Only becomes `true` after a successful validation. Any changes to the database will reset it to `false`.
+pub static UPLOAD_ENABLED: GlobalSignal<bool> = GlobalSignal::new( || false );
+
+
 #[component]
-fn Toolbar(mut save_message: Signal<String>) -> Element {
+fn Toolbar() -> Element {
+
+
+
     rsx! {
         div { id: "toolbar",
             button {
                 id: "download-from-scanner",
                 disabled: matches!(*DOWNLOAD_STATUS.read(), DownloadStatus::InProgress { .. }),
                 onclick: move |_| {
+                    *UPLOAD_ENABLED.write() = false;
                     spawn(download_database());
                 },
                 title: "Download the database from the connected scanner.",
-                "Download From Radio"
+                "Download From Scanner"
+            }
+            button {
+                id: "validate-database",
+                disabled: SCAN_DATABASE.read().is_none(),
+                onclick: move |_| {
+                    *UPLOAD_ENABLED.write() = false;
+                    let errors: Vec<String> = match SCAN_DATABASE.peek().as_ref() {
+                        Some(db) => db.validate().iter().map(|e| e.to_string()).collect(),
+                        None => return,
+                    };
+                    if errors.is_empty() {
+                        push_message(MessageKind::Note, "validation", "Database is valid.");
+                        *UPLOAD_ENABLED.write() = true;
+                    } else {
+                        for error in &errors {
+                            push_message(MessageKind::Warning, "validation", error.clone());
+                        }
+                    }
+                    *VALIDATION.write() = Some(errors);
+                },
+                title: "Check the database for errors before uploading.",
+                "Validate"
+            }
+            button {
+                id: "upload-to-scanner",
+                disabled: !*UPLOAD_ENABLED.read(),
+                title: "Upload the database to the scanner (requires a successful validation).",
+                onclick: move |_| {
+                    // send a note to the message queue
+                    push_message(MessageKind::Note, "upload", "Uploading database to scanner...");
+                },
+                "Upload To Scanner"
             }
             button {
                 id: "save-ron",
@@ -216,10 +261,18 @@ fn Toolbar(mut save_message: Signal<String>) -> Element {
                             Some(db) => save_database_ron(db, file.path()),
                             None => Err("Nothing to save".to_string()),
                         };
-                        save_message.set(match result {
-                            Ok(path) => format!("Saved to {}", path.display()),
-                            Err(error) => format!("Save failed: {error}"),
-                        });
+                        match result {
+                            Ok(path) => push_message(
+                                MessageKind::Note,
+                                "file",
+                                format!("Saved to {}", path.display()),
+                            ),
+                            Err(error) => push_message(
+                                MessageKind::Warning,
+                                "file",
+                                format!("Save failed: {error}"),
+                            ),
+                        }
                     });
                 },
                 title: "Save the database to a file.",
@@ -229,6 +282,7 @@ fn Toolbar(mut save_message: Signal<String>) -> Element {
                 id: "load-ron",
                 disabled: matches!(*DOWNLOAD_STATUS.read(), DownloadStatus::InProgress { .. }),
                 onclick: move |_| {
+                    *UPLOAD_ENABLED.write() = false;
                     spawn(async move {
                         let mut dialog = rfd::AsyncFileDialog::new()
                             .set_title("Load Database")
@@ -243,16 +297,37 @@ fn Toolbar(mut save_message: Signal<String>) -> Element {
                         match load_database_ron(file.path()) {
                             Ok(db) => {
                                 *SCAN_DATABASE.write() = Some(db);
+                                *VALIDATION.write() = None;
                                 *SCANNER_MEMORY.write() = None;
                                 *DOWNLOAD_STATUS.write() = DownloadStatus::NotStarted;
-                                save_message.set(format!("Loaded {}", file.path().display()));
+                                push_message(
+                                    MessageKind::Note,
+                                    "file",
+                                    format!("Loaded {}", file.path().display()),
+                                );
                             }
-                            Err(error) => save_message.set(format!("Load failed: {error}")),
+                            Err(error) => push_message(
+                                MessageKind::Warning,
+                                "file",
+                                format!("Load failed: {error}"),
+                            ),
                         }
                     });
                 },
                 title: "Load a database from a file.",
                 "Load from File"
+            }
+            button {
+                id: "clear-database",
+                onclick: move |_| {
+                    *UPLOAD_ENABLED.write() = false;
+                    *SCAN_DATABASE.write() = None;
+                    *VALIDATION.write() = None;
+                    *SCANNER_MEMORY.write() = None;
+                    *DOWNLOAD_STATUS.write() = DownloadStatus::NotStarted;
+                    push_message(MessageKind::Note, "file", "Database cleared.");
+                },
+                "Reset"
             }
             MemoryUsage {}
         }
@@ -261,27 +336,15 @@ fn Toolbar(mut save_message: Signal<String>) -> Element {
 
 #[component]
 fn DatabasePage() -> Element {
-    let save_message = use_signal(String::new);
     rsx! {
-        Toolbar { save_message }
+        Toolbar {}
         main {
-            if !save_message.read().is_empty() {
-                p { "{save_message}" }
+            match *DOWNLOAD_STATUS.read() {
+                DownloadStatus::InProgress { done, total } => rsx! {
+                    p { "Download in progress... ({done}/{total} systems)" }
+                },
+                _ => rsx! {}
             }
-
-            div {
-                match *DOWNLOAD_STATUS.read() {
-                    DownloadStatus::NotStarted => rsx! { "Download not started." },
-                    DownloadStatus::InProgress { done, total } => rsx! {
-                        p { "Download in progress... ({done}/{total} systems)" }
-                    },
-                    DownloadStatus::Completed => rsx! {
-                        p { "Download completed successfully." }
-                    },
-                    DownloadStatus::Failed(ref error) => rsx! { p { "Download failed: {error}" } },
-                }
-            }
-
             DatabaseView {}
         }
     }

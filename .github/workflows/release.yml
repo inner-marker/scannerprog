@@ -47,7 +47,12 @@ jobs:
       - name: Install Dioxus CLI
         run: cargo binstall dioxus-cli --version 0.6.3 --no-confirm
 
+      - name: Bundle Linux packages
+        if: matrix.platform == 'linux'
+        run: dx bundle --release --package-types deb --package-types rpm --package-types appimage
+
       - name: Bundle app
+        if: matrix.platform != 'linux'
         run: dx bundle --release  # Produces the platform package
 
       # Extract release notes for the current version from the CHANGELOG.md

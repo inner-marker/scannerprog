@@ -4,6 +4,7 @@
 //! Built from the BCD325P2 remote command protocol (ver. 1.02).
 //! Standard library only; every rust block in the document forms this one module.
 
+use std::collections::HashMap;
 use std::fmt; // Display impls produce the exact wire format of each value
 use std::str::FromStr; // FromStr impls parse the wire format back
 
@@ -1261,6 +1262,147 @@ impl ScanDatabase {
             .sum()
     }
 
+    /// Validate a name.
+    ///
+    /// Checks a given name for validity according to the scanner's rules.
+    ///
+    /// Allowed charecters:
+    /// - a-z
+    /// - A-Z
+    /// - 0-9
+    /// - !@#$%&*()-/<>.?
+    /// - space
+    ///
+    /// Maximum length: 16 characters.
+    pub fn validate_name(name: &str) -> bool {
+        if name.is_empty() || name.len() > 16 {
+            return false;
+        }
+        for c in name.chars() {
+            if !(c.is_alphanumeric() || c.is_whitespace() || "!@#$%&*()-/<>.?".contains(c)) {
+                return false;
+            }
+        }
+        true
+    }
+
+
+    /// Check the database against the rules the scanner enforces.
+    /// Returns every problem found; an empty list means valid.
+    pub fn validate(&self) -> Vec<ValidationError> {
+        let mut errors = Vec::new();
+        let mut quick_keys: HashMap<u8, usize> = HashMap::new();
+        let mut start_keys: HashMap<u8, usize> = HashMap::new();
+
+        // Validate each system in the database.
+        for (i, sys) in self.systems.iter().enumerate() {
+            // Validate the system's quick key for duplicates.
+            if let Some(KeyAssignment::Key(k)) = sys.info.quick_key {
+                if let Some(&first) = quick_keys.get(&k) {
+                    errors.push(ValidationError::DuplicateSystemQuickKey { key: k, first, duplicate: i });
+                } else {
+                    quick_keys.insert(k, i);
+                }
+            }
+
+            // Validate the system's start key for duplicates.
+            if let Some(KeyAssignment::Key(k)) = sys.info.start_key {
+                if let Some(&first) = start_keys.get(&k) {
+                    errors.push(ValidationError::DuplicateStartupKey { key: k, first, duplicate: i });
+                } else {
+                    start_keys.insert(k, i);
+                }
+            }
+
+            // Validate the group's quick keys for duplicates.
+            let group_keys: Vec<Option<KeyAssignment>> = match &sys.kind {
+                SystemKind::Conventional { groups } => groups.iter().map(|g| g.info.quick_key).collect(),
+                SystemKind::Trunked { tgid_groups, .. } => tgid_groups.iter().map(|g| g.info.quick_key).collect(),
+            };
+
+            // Track seen group quick keys to detect duplicates.
+            let mut seen: HashMap<u8, usize> = HashMap::new();
+            for (g, key) in group_keys.into_iter().enumerate() {
+                if let Some(KeyAssignment::Key(k)) = key {
+                    if let Some(&first) = seen.get(&k) {
+                        errors.push(ValidationError::DuplicateGroupQuickKey { system: i, key: k, first, duplicate: g });
+                    } else {
+                        seen.insert(k, g);
+                    }
+                }
+            }
+
+            // Validate the system's name.
+            if !Self::validate_name(sys.info.name.as_str()) {
+                errors.push(ValidationError::InvalidSystemName {
+                    system: i,
+                    name: sys.info.name.to_string(),
+                });
+            }
+
+            // Validate the names of groups, channels, sites, and talkgroup groups.
+            match &sys.kind {
+                // Validate the names of groups and channels for conventional systems.
+                SystemKind::Conventional { groups } => {
+                    for (g, group) in groups.iter().enumerate() {
+                        if !Self::validate_name(group.info.name.as_str()) {
+                            errors.push(ValidationError::InvalidGroupName {
+                                system: i,
+                                group: g,
+                                name: group.info.name.to_string(),
+                            });
+                        }
+                        for (c, channel) in group.channels.iter().enumerate() {
+                            if !Self::validate_name(channel.info.name.as_str()) {
+                                errors.push(ValidationError::InvalidChannelName {
+                                    system: i,
+                                    group: g,
+                                    channel: c,
+                                    name: channel.info.name.to_string(),
+                                });
+                            }
+                        }
+                    }
+                }
+                // Validate the names of sites and talkgroup groups for trunked systems.
+                SystemKind::Trunked { sites, tgid_groups, .. } => {
+                    // for each site, validate its name.
+                    for (s, site) in sites.iter().enumerate() {
+                        if !Self::validate_name(site.info.name.as_str()) {
+                            errors.push(ValidationError::InvalidSiteName {
+                                system: i,
+                                site: s,
+                                name: site.info.name.to_string(),
+                            });
+                        }
+                    }
+                    // for each talkgroup group, validate its name and the names of its talkgroups.
+                    for (g, group) in tgid_groups.iter().enumerate() {
+                        if !Self::validate_name(group.info.name.as_str()) {
+                            errors.push(ValidationError::InvalidTalkgroupGroupName {
+                                system: i,
+                                group: g,
+                                name: group.info.name.to_string(),
+                            });
+                        }
+                        // for each talkgroup in the group, validate its name.
+                        for (t, talkgroup) in group.tgids.iter().enumerate() {
+                            if !Self::validate_name(talkgroup.info.name.as_str()) {
+                                errors.push(ValidationError::InvalidTalkgroupName {
+                                    system: i,
+                                    group: g,
+                                    talkgroup: t,
+                                    name: talkgroup.info.name.to_string(),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        errors
+    }
+
     /// Make a new placeholder database 
     /// 
     /// The database is initialized with one system, one group, and one channel, all placeholder entries.
@@ -1280,6 +1422,50 @@ impl ScanDatabase {
                     }],
                 },
             }],
+        }
+    }
+}
+
+/// A rule violation found by [`ScanDatabase::validate`]. Positions are 0-based
+/// indices into the database's system list and the system's group list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ValidationError {
+    DuplicateSystemQuickKey { key: u8, first: usize, duplicate: usize },
+    DuplicateStartupKey { key: u8, first: usize, duplicate: usize },
+    DuplicateGroupQuickKey { system: usize, key: u8, first: usize, duplicate: usize },
+    InvalidSystemName { system: usize, name: String },
+    InvalidGroupName { system: usize, group: usize, name: String },
+    InvalidChannelName { system: usize, group: usize, channel: usize, name: String },
+    InvalidSiteName { system: usize, site: usize, name: String },
+    InvalidTalkgroupGroupName { system: usize, group: usize, name: String },
+    InvalidTalkgroupName { system: usize, group: usize, talkgroup: usize, name: String },
+}
+
+impl fmt::Display for ValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DuplicateSystemQuickKey { key, first, duplicate } => write!(
+                f, "Systems {} and {} both use quick key {key}", first + 1, duplicate + 1),
+            Self::DuplicateStartupKey { key, first, duplicate } => write!(
+                f, "Systems {} and {} both use startup key {key}", first + 1, duplicate + 1),
+            Self::DuplicateGroupQuickKey { system, key, first, duplicate } => write!(
+                f, "In system {}, groups {} and {} both use quick key {key}",
+                system + 1, first + 1, duplicate + 1),
+            Self::InvalidSystemName { system, name } => write!(
+                f, "System {} has invalid name {name:?}", system + 1),
+            Self::InvalidGroupName { system, group, name } => write!(
+                f, "Group {} in system {} has invalid name {name:?}", group + 1, system + 1),
+            Self::InvalidChannelName { system, group, channel, name } => write!(
+                f, "Channel {} in group {} of system {} has invalid name {name:?}",
+                channel + 1, group + 1, system + 1),
+            Self::InvalidSiteName { system, site, name } => write!(
+                f, "Site {} in system {} has invalid name {name:?}", site + 1, system + 1),
+            Self::InvalidTalkgroupGroupName { system, group, name } => write!(
+                f, "Talkgroup group {} in system {} has invalid name {name:?}",
+                group + 1, system + 1),
+            Self::InvalidTalkgroupName { system, group, talkgroup, name } => write!(
+                f, "Talkgroup {} in group {} of system {} has invalid name {name:?}",
+                talkgroup + 1, group + 1, system + 1),
         }
     }
 }
@@ -1664,6 +1850,82 @@ mod tests {
     impl Scanner for Mock {
         fn send(&mut self, cmd: &str) -> Result<String, Error> {
             Ok(self.0.get(cmd).copied().unwrap_or("ERR").to_string())
+        }
+    }
+
+    #[test]
+    fn validate_duplicate_keys() {
+        let mut db = ScanDatabase::new_placeholder();
+        db.systems[0].info.name = Name("System".to_string());
+        if let SystemKind::Conventional { groups } = &mut db.systems[0].kind {
+            groups[0].info.name = Name("Group".to_string());
+            groups[0].channels[0].info.name = Name("Channel".to_string());
+        }
+        assert!(db.validate().is_empty());
+        let mut second = db.systems[0].clone();
+        db.systems[0].info.quick_key = Some(KeyAssignment::Key(1));
+        db.systems[0].info.start_key = Some(KeyAssignment::Key(2));
+        second.info.quick_key = Some(KeyAssignment::Key(1));
+        second.info.start_key = Some(KeyAssignment::Key(2));
+        db.systems.push(second);
+        assert_eq!(db.validate().len(), 2);
+        db.systems[1].info.quick_key = Some(KeyAssignment::Unassigned);
+        db.systems[1].info.start_key = None;
+        assert!(db.validate().is_empty());
+        if let SystemKind::Conventional { groups } = &mut db.systems[0].kind {
+            let mut g = groups[0].clone();
+            groups[0].info.quick_key = Some(KeyAssignment::Key(3));
+            g.info.quick_key = Some(KeyAssignment::Key(3));
+            groups.push(g);
+        }
+        assert_eq!(
+            db.validate(),
+            vec![ValidationError::DuplicateGroupQuickKey { system: 0, key: 3, first: 0, duplicate: 1 }]
+        );
+    }
+
+    #[test]
+    fn validate_all_names_and_include_invalid_name_in_error() {
+        let mut db = ScanDatabase::new_placeholder();
+        db.systems[0].info.name = Name("Bad_System".to_string());
+        if let SystemKind::Conventional { groups } = &mut db.systems[0].kind {
+            groups[0].info.name = Name("Bad_Group".to_string());
+            groups[0].channels[0].info.name = Name("Bad_Channel".to_string());
+        }
+
+        let mut trunked = db.systems[0].clone();
+        trunked.info.name = Name("Trunked".to_string());
+        trunked.kind = SystemKind::Trunked {
+            trunk: TrunkRecord::default(),
+            sites: vec![Site {
+                index: Index::default(),
+                info: SiteRecord { name: Name("Bad_Site".to_string()), ..Default::default() },
+                band_plan: None,
+                frequencies: Vec::new(),
+            }],
+            tgid_groups: vec![TgidGroup {
+                index: Index::default(),
+                info: GroupRecord { name: Name("Bad_TGID_Group".to_string()), ..Default::default() },
+                tgids: vec![TgidEntry {
+                    index: Index::default(),
+                    info: TgidRecord { name: Name("Bad_Talkgroup".to_string()), ..Default::default() },
+                }],
+            }],
+        };
+        db.systems.push(trunked);
+
+        let errors = db.validate();
+        assert_eq!(errors.len(), 6);
+        let messages: Vec<String> = errors.iter().map(ToString::to_string).collect();
+        for invalid_name in [
+            "Bad_System",
+            "Bad_Group",
+            "Bad_Channel",
+            "Bad_Site",
+            "Bad_TGID_Group",
+            "Bad_Talkgroup",
+        ] {
+            assert!(messages.iter().any(|message| message.contains(invalid_name)));
         }
     }
 

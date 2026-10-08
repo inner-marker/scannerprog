@@ -1,4 +1,5 @@
 use dioxus::prelude::*;
+use crate::messages::{push_message, MessageKind};
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -124,6 +125,10 @@ pub enum DownloadStatus {
 
 pub static DOWNLOAD_STATUS: GlobalSignal<DownloadStatus> = Signal::global(|| DownloadStatus::NotStarted);
 
+/// Result of the last validation: `None` if not validated (or edited since),
+/// `Some(errors)` otherwise. The database may be uploaded only when this is `Some` and empty.
+pub static VALIDATION: GlobalSignal<Option<Vec<String>>> = Signal::global(|| None);
+
 /// The most recently downloaded scan database.
 pub static SCAN_DATABASE: GlobalSignal<Option<ScanDatabase>> = Signal::global(|| Some(ScanDatabase::new_placeholder()));
 
@@ -178,11 +183,16 @@ fn download_blocking(
     })
 }
 
+fn fail_download(error: String) {
+    push_message(MessageKind::Warning, "download", format!("Download failed: {error}"));
+    *DOWNLOAD_STATUS.write() = DownloadStatus::Failed(error);
+}
+
 /// Downloads the scan database from the detected scanner, updating
 /// [`DOWNLOAD_STATUS`] and [`SCAN_DATABASE`].
 pub async fn download_database() {
     let Some(port_name) = SCANNER_INFO.peek().as_ref().map(|s| s.port.clone()) else {
-        *DOWNLOAD_STATUS.write() = DownloadStatus::Failed("No scanner detected".into());
+        fail_download("No scanner detected".into());
         return;
     };
     if DOWNLOAD_ACTIVE.swap(true, Ordering::SeqCst) {
@@ -205,16 +215,18 @@ pub async fn download_database() {
         Ok(Ok((db, memory))) => {
             *SCANNER_MEMORY.write() = memory;
             *SCAN_DATABASE.write() = Some(db);
+            *VALIDATION.write() = None;
             *DOWNLOAD_STATUS.write() = DownloadStatus::Completed;
+            push_message(MessageKind::Note, "download", "Download completed successfully.");
         }
         Ok(Err(Error::Scanner { cmd, reply })) if cmd == "PRG" => {
-            *DOWNLOAD_STATUS.write() = DownloadStatus::Failed(format!(
+            fail_download(format!(
                 "scanner rejected PRG: {reply}. The scanner refuses Program Mode while it is in a menu, \
                  direct entry, or Quick Save. Return it to the normal scan/hold screen and try again."
             ));
         }
-        Ok(Err(e)) => *DOWNLOAD_STATUS.write() = DownloadStatus::Failed(e.to_string()),
-        Err(e) => *DOWNLOAD_STATUS.write() = DownloadStatus::Failed(e.to_string()),
+        Ok(Err(e)) => fail_download(e.to_string()),
+        Err(e) => fail_download(e.to_string()),
     }
     DOWNLOAD_ACTIVE.store(false, Ordering::SeqCst);
 }
