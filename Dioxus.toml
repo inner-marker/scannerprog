@@ -3,12 +3,10 @@
 [bundle]
 publisher = "Inner-Marker"
 identifier = "com.innermarker-scannerprog"
-icon = [ # dx bundle picks the right format for each platform from this list
-  "assets/sp-icons/icon-32.png",     # Small sizes for Linux menus/taskbars
+icon = [
   "assets/sp-icons/icon-128.png",
-  "assets/sp-icons/128x128@2x.png",  # HiDPI variant
-  "assets/sp-icons/icon.icns",       # macOS app bundle icon
-  "assets/sp-icons/icon.ico",        # Windows executable/installer icon
+  "assets/sp-icons/icon.icns",
+  "assets/sp-icons/icon.ico",
 ]
 [web.app]
 
