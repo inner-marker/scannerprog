@@ -1,4 +1,7 @@
-## [0.1.1] - Initial Release
+# Changelog
+
+
+## [0.1.1] - Build Correction
 
  - Fix release.yml Github Actions workflow (Dioxus CLI version updated to 0.7.10)
 
