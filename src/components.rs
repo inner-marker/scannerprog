@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use crate::database_view::{DatabaseView, MemoryUsage};
 use crate::scanner_interaction::{
-    detect_scanner, download_database, save_database_ron, DownloadStatus, DOWNLOAD_ACTIVE, DOWNLOAD_STATUS, SCANNER_INFO, SCAN_DATABASE,
+    default_save_dir, default_save_name, detect_scanner, download_database, load_database_ron, save_database_ron, DownloadStatus, DOWNLOAD_ACTIVE, DOWNLOAD_STATUS, SCANNER_INFO, SCANNER_MEMORY, SCAN_DATABASE,
     SCANNER_USB_DEVICE,
 };
 
@@ -189,30 +189,71 @@ fn Toolbar(mut save_message: Signal<String>) -> Element {
                     spawn(download_database());
                 },
                 title: "Download the database from the connected scanner.",
-                "Download"
+                "Download From Radio"
             }
             button {
                 id: "save-ron",
                 disabled: SCAN_DATABASE.read().is_none(),
                 onclick: move |_| {
-                    let model = SCANNER_INFO
-                        .peek()
-                        .as_ref()
-                        .map(|s| s.model.clone())
-                        .unwrap_or_else(|| "Scanner".into());
-                    let result = match SCAN_DATABASE.peek().as_ref() {
-                        Some(db) => save_database_ron(db, &model),
-                        None => Err("Nothing to save".to_string()),
-                    };
-                    save_message.set(match result {
-                        Ok(path) => format!("Saved to {}", path.display()),
-                        Err(error) => format!("Save failed: {error}"),
+                    spawn(async move {
+                        let model = SCANNER_INFO
+                            .peek()
+                            .as_ref()
+                            .map(|s| s.model.clone())
+                            .unwrap_or_else(|| "Scanner".into());
+                        let mut dialog = rfd::AsyncFileDialog::new()
+                            .set_title("Save Database")
+                            .add_filter("RON file", &["ron"])
+                            .set_file_name(default_save_name(&model));
+                        if let Some(dir) = default_save_dir() {
+                            dialog = dialog.set_directory(dir);
+                        }
+                        // None means the user cancelled.
+                        let Some(file) = dialog.save_file().await else {
+                            return;
+                        };
+                        let result = match SCAN_DATABASE.peek().as_ref() {
+                            Some(db) => save_database_ron(db, file.path()),
+                            None => Err("Nothing to save".to_string()),
+                        };
+                        save_message.set(match result {
+                            Ok(path) => format!("Saved to {}", path.display()),
+                            Err(error) => format!("Save failed: {error}"),
+                        });
                     });
                 },
                 title: "Save the database to a file.",
                 "Save to File"
             }
-            button { title: "Placeholder action 3", "Action 3" }
+            button {
+                id: "load-ron",
+                disabled: matches!(*DOWNLOAD_STATUS.read(), DownloadStatus::InProgress { .. }),
+                onclick: move |_| {
+                    spawn(async move {
+                        let mut dialog = rfd::AsyncFileDialog::new()
+                            .set_title("Load Database")
+                            .add_filter("RON file", &["ron"]);
+                        if let Some(dir) = default_save_dir() {
+                            dialog = dialog.set_directory(dir);
+                        }
+                        // None means the user cancelled.
+                        let Some(file) = dialog.pick_file().await else {
+                            return;
+                        };
+                        match load_database_ron(file.path()) {
+                            Ok(db) => {
+                                *SCAN_DATABASE.write() = Some(db);
+                                *SCANNER_MEMORY.write() = None;
+                                *DOWNLOAD_STATUS.write() = DownloadStatus::NotStarted;
+                                save_message.set(format!("Loaded {}", file.path().display()));
+                            }
+                            Err(error) => save_message.set(format!("Load failed: {error}")),
+                        }
+                    });
+                },
+                title: "Load a database from a file.",
+                "Load from File"
+            }
             MemoryUsage {}
         }
     }

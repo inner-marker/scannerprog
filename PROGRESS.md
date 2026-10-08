@@ -11,9 +11,10 @@
 ### Database Management
 
 - [x] Read the database from the scanner
-- [ ] Save/Load database to/from a `.ron` file
+- [x] Save/Load database to/from a `.ron` file
 - [ ] Edit the database locally
 - [ ] Validate edits to the database
+- [ ] Write the database back to the scanner
 
 ### Scanning
 

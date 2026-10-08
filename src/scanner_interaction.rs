@@ -219,21 +219,35 @@ pub async fn download_database() {
     DOWNLOAD_ACTIVE.store(false, Ordering::SeqCst);
 }
 
-/// Saves `db` as RON to `~/Documents/Scanner Programmer/<timestamp> <model> Download.ron`
-/// and returns the path written.
-pub fn save_database_ron(db: &ScanDatabase, model: &str) -> Result<std::path::PathBuf, String> {
-    let dir = dirs::document_dir()
-        .ok_or("Could not find the Documents folder")?
-        .join("Scanner Programmer");
-    std::fs::create_dir_all(&dir).map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
-
+/// Suggested file name for saving a database: `<timestamp> <model> Download.ron`.
+pub fn default_save_name(model: &str) -> String {
     // Keep path separators in the model name out of the file name.
     let model = model.replace(['/', '\\'], "-");
     let stamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
-    let path = dir.join(format!("{stamp} {model} Download.ron"));
+    format!("{stamp} {model} Download.ron")
+}
 
+/// Folder the save dialog opens in: `~/Documents/Scanner Programmer`, if it can be found.
+pub fn default_save_dir() -> Option<std::path::PathBuf> {
+    let dir = dirs::document_dir()?.join("Scanner Programmer");
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir)
+}
+
+/// Saves `db` as RON to `path`, giving it a `.ron` extension if it has none.
+pub fn save_database_ron(db: &ScanDatabase, path: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    let mut path = path.to_path_buf();
+    if path.extension().is_none() {
+        path.set_extension("ron");
+    }
     let text = ron::ser::to_string_pretty(db, ron::ser::PrettyConfig::default())
         .map_err(|e| format!("Could not serialize the database: {e}"))?;
     std::fs::write(&path, text).map_err(|e| format!("Could not write {}: {e}", path.display()))?;
     Ok(path)
+}
+
+/// Reads a RON database previously written by [`save_database_ron`].
+pub fn load_database_ron(path: &std::path::Path) -> Result<ScanDatabase, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("Could not read {}: {e}", path.display()))?;
+    ron::from_str(&text).map_err(|e| format!("Could not parse {}: {e}", path.display()))
 }

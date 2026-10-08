@@ -803,7 +803,7 @@ impl SystemRecord {
 }
 
 /// Trunking settings for a trunked system, from TRN (same index as the system).
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Default)]
 pub struct TrunkRecord {
     pub id_search: Option<bool>,  // false = ID Scan, true = ID Search
     pub status_bit: Option<bool>, // Motorola status bit
@@ -860,7 +860,7 @@ impl TrunkRecord {
 }
 
 /// One site of a trunked system, from SIF.
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Default)]
 pub struct SiteRecord {
     pub name: Name,
     pub quick_key: Option<KeyAssignment>,
@@ -986,7 +986,7 @@ impl P25BandPlan {
 }
 
 /// One trunk frequency of a site, from TFQ.
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Default)]
 pub struct TrunkFreqRecord {
     pub freq: Option<Freq>,
     pub lcn: Option<u16>, // EDACS 1-30, LTR 1-20, DMR/TRBO 0-4094; ignored for MOT/SCAT
@@ -1125,7 +1125,7 @@ impl ChannelRecord {
 }
 
 /// A talkgroup ID entry, from TIN.
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Default)]
 pub struct TgidRecord {
     pub name: Name,
     pub tgid: Option<Tgid>,
@@ -1220,7 +1220,7 @@ impl LocationAlertRecord {
 }
 
 /// Everything read from the scanner's scan memory.
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Default)]
 pub struct ScanDatabase {
     pub systems: Vec<System>, // in scan order (system list link order)
 }

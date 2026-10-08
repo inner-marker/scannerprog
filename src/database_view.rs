@@ -1,67 +1,398 @@
 use dioxus::prelude::*;
+use std::fmt::Display;
+use std::str::FromStr;
 
-use crate::scanner_db::{BandPlan, Freq, GroupRecord, KeyAssignment, MAX_BLOCKS, Modulation, ChannelGroup, Site, System, SystemKind, SystemRecord, SystemType, TgidGroup, TrunkRecord};
-use crate::scanner_interaction::{SCANNER_MEMORY, SCAN_DATABASE};
+use crate::scanner_db::{
+    NumberTag,
+    BandPlan, Channel, ChannelGroup, Freq, GroupRecord, GroupType, KeyAssignment, Modulation, Name, ScanDatabase, Site, System,
+    SystemKind, SystemRecord, SiteRecord, TgidRecord, ChannelRecord, SystemType, TgidEntry, TgidGroup, TrunkFreq, TrunkRecord, MAX_BLOCKS,
+};
+use crate::scanner_interaction::SCAN_DATABASE;
 
 const EDIT_ICON: Asset = asset!("/assets/icons/icons8-edit-pencil-24.svg");
 
-fn text(v: String) -> Element {
-    rsx! { input { r#type: "text", value: "{v}", disabled: true } }
+// ---- Turning record values into editable text, and edited text back into values. ----
+// Text that does not parse leaves the original value in place.
+
+/// Optional value to string. Empty if `None`.
+/// 
+/// # Arguments
+/// * `v` - The optional value to convert to a string.
+///
+/// # Returns
+/// A string representation of the value, or an empty string if `None`.
+/// 
+/// # Examples
+/// ```
+/// let v: Option<i32> = Some(42);
+/// assert_eq!(opt_string(&v), "42");
+/// let v: Option<i32> = None;
+/// assert_eq!(opt_string(&v), "");
+/// ```
+fn opt_string<T: Display>(v: &Option<T>) -> String {
+    v.as_ref().map(|v| v.to_string()).unwrap_or_default()
 }
 
-fn opt_text<T: std::fmt::Display>(v: &Option<T>) -> Element {
-    text(v.as_ref().map(|v| v.to_string()).unwrap_or_default())
+/// Commits an optional value from a draft string.
+/// 
+/// In other words, it attempts to parse the draft string into a value of type `T`. 
+/// If parsing fails, it falls back to the original value.
+/// 
+/// # Arguments
+/// * `draft` - The draft string to parse.
+/// * `orig` - The original optional value.
+///
+/// # Returns
+/// The parsed value if successful, or the original value if parsing fails.
+/// 
+/// # Examples
+/// ```
+/// let orig: Option<i32> = Some(42);
+/// assert_eq!(commit_opt("43", &orig), Some(43));
+/// assert_eq!(commit_opt("", &orig), None);
+/// ```
+fn commit_opt<T: FromStr + Clone>(draft: &str, orig: &Option<T>) -> Option<T> {
+    let draft = draft.trim();
+    if draft.is_empty() {
+        return None;
+    }
+    draft.parse().ok().or_else(|| orig.clone())
 }
 
-fn opt_number<T: std::fmt::Display>(v: &Option<T>) -> Element {
-    let v = v.as_ref().map(|v| v.to_string()).unwrap_or_default();
-    rsx! { input { r#type: "number", value: "{v}", disabled: true } }
+/// Converts an optional key assignment to a string.
+/// 
+/// # Arguments
+/// * `v` - The optional key assignment to convert.
+///
+/// # Returns
+/// A string representation of the key assignment, or an empty string if `None` or unassigned.
+/// 
+/// # Examples
+/// ```
+/// let v: Option<KeyAssignment> = Some(KeyAssignment::Key(42));
+/// assert_eq!(key_string(&v), "42");
+/// let v: Option<KeyAssignment> = None;
+/// assert_eq!(key_string(&v), "");
+/// ```
+fn key_string(v: &Option<KeyAssignment>) -> String {
+    match v {
+        Some(KeyAssignment::Key(n)) => n.to_string(),
+        _ => String::new(),
+    }
 }
 
-fn checkbox(v: &Option<bool>) -> Element {
-    rsx! { input { r#type: "checkbox", checked: v.unwrap_or(false), disabled: true } }
+/// Rounds to the nearest multiple of `step` and clamps into `0..=max`. `None` if not a number.
+fn clamp_int(draft: &str, max: u32, step: u32) -> Option<u32> {
+    let n: f64 = draft.trim().parse().ok().filter(|n: &f64| n.is_finite())?;
+    let step = step as f64;
+    let n = (n / step).round() * step;
+    Some(n.clamp(0.0, max as f64 / step * step) as u32)
 }
 
-/// Frequency in MHz, e.g. `01237000` -> `123.7`.
-fn freq_input(v: &Option<Freq>) -> Element {
-    let value = v.map(|f| f.mhz().to_string()).unwrap_or_default();
+/// Empty means unassigned. Out-of-range numbers are clamped to `max`.
+fn commit_key(draft: &str, orig: &Option<KeyAssignment>, max: u8) -> Option<KeyAssignment> {
+    if draft.trim().is_empty() {
+        return match orig {
+            None | Some(KeyAssignment::Unassigned) => *orig,
+            Some(KeyAssignment::Key(_)) => Some(KeyAssignment::Unassigned),
+        };
+    }
+    clamp_int(draft, max as u32, 1).map(|n| KeyAssignment::Key(n as u8)).or(*orig)
+}
+
+fn tag_string(v: &Option<NumberTag>) -> String {
+    match v {
+        Some(NumberTag::Tag(n)) => n.to_string(),
+        _ => String::new(),
+    }
+}
+
+fn commit_tag(draft: &str, orig: &Option<NumberTag>) -> Option<NumberTag> {
+    if draft.trim().is_empty() {
+        return match orig {
+            None | Some(NumberTag::Unassigned) => *orig,
+            Some(NumberTag::Tag(_)) => Some(NumberTag::Unassigned),
+        };
+    }
+    clamp_int(draft, 999, 1).map(|n| NumberTag::Tag(n as u16)).or(*orig)
+}
+
+/// Integer rounded to a multiple of `step` and clamped to `0..=max`; unparsable text keeps the original.
+fn commit_int<T: TryFrom<u32> + Copy>(draft: &str, orig: &Option<T>, max: u32, step: u32) -> Option<T> {
+    if draft.trim().is_empty() {
+        return None;
+    }
+    clamp_int(draft, max, step).and_then(|n| T::try_from(n).ok()).or(*orig)
+}
+
+fn freq_string(v: &Option<Freq>) -> String {
+    v.map(|f| f.mhz().to_string()).unwrap_or_default()
+}
+
+fn commit_freq(draft: &str, orig: &Option<Freq>) -> Option<Freq> {
+    let draft = draft.trim();
+    if draft.is_empty() {
+        return None;
+    }
+    match draft.parse::<f64>() {
+        Ok(mhz) if mhz.is_finite() && mhz >= 0.0 => Some(Freq::from_hz((mhz * 1e6).round() as u64)),
+        _ => *orig,
+    }
+}
+
+const NAME_MAX: usize = 16;
+
+fn name_char_ok(c: char) -> bool {
+    c.is_ascii_alphanumeric() || " !@#$%^&*()-/<>.?".contains(c)
+}
+
+fn sanitize_name(text: &str) -> String {
+    text.chars().filter(|c| name_char_ok(*c)).take(NAME_MAX).collect()
+}
+
+/// Disallowed characters are dropped and the result is cut to 16 characters.
+fn commit_name(draft: &str, orig: &Name) -> Name {
+    Name::new(sanitize_name(draft).trim()).unwrap_or_else(|_| orig.clone())
+}
+
+/// Keeps `None` when the box was never ticked.
+fn commit_bool(draft: bool, orig: &Option<bool>) -> Option<bool> {
+    if draft == orig.unwrap_or(false) {
+        *orig
+    } else {
+        Some(draft)
+    }
+}
+
+// ---- Database lookups by position, used to write edits back. ----
+
+fn system_mut(db: &mut ScanDatabase, si: usize) -> Option<&mut System> {
+    db.systems.get_mut(si)
+}
+
+fn groups_mut(db: &mut ScanDatabase, si: usize) -> Option<&mut Vec<ChannelGroup>> {
+    match &mut system_mut(db, si)?.kind {
+        SystemKind::Conventional { groups } => Some(groups),
+        _ => None,
+    }
+}
+
+fn sites_mut(db: &mut ScanDatabase, si: usize) -> Option<&mut Vec<Site>> {
+    match &mut system_mut(db, si)?.kind {
+        SystemKind::Trunked { sites, .. } => Some(sites),
+        _ => None,
+    }
+}
+
+fn tgid_groups_mut(db: &mut ScanDatabase, si: usize) -> Option<&mut Vec<TgidGroup>> {
+    match &mut system_mut(db, si)?.kind {
+        SystemKind::Trunked { tgid_groups, .. } => Some(tgid_groups),
+        _ => None,
+    }
+}
+
+fn update_db(f: impl FnOnce(&mut ScanDatabase)) {
+    if let Some(db) = SCAN_DATABASE.write().as_mut() {
+        f(db);
+    }
+}
+
+// ---- Adding new items. New items get a placeholder name and default settings. ----
+
+const SYSTEM_TYPES: [SystemType; 9] = [
+    SystemType::Conventional,
+    SystemType::Motorola,
+    SystemType::Edacs,
+    SystemType::EdacsScat,
+    SystemType::Ltr,
+    SystemType::P25Standard,
+    SystemType::P25OneFreq,
+    SystemType::MotoTrbo,
+    SystemType::DmrOneFreq,
+];
+
+fn system_type_label(t: SystemType) -> &'static str {
+    match t {
+        SystemType::Conventional => "Conventional",
+        SystemType::Motorola => "Motorola",
+        SystemType::Edacs => "EDCS Wide/Narrow",
+        SystemType::EdacsScat => "EDCS SCAT",
+        SystemType::Ltr => "LTR",
+        SystemType::P25Standard => "P25 Standard",
+        SystemType::P25OneFreq => "P25 One Frequency",
+        SystemType::MotoTrbo => "MotoTRBO",
+        SystemType::DmrOneFreq => "DMR One Frequency",
+    }
+}
+
+fn new_name(text: &str) -> Name {
+    Name::new(text).unwrap_or_default()
+}
+
+fn new_system(sys_type: SystemType) -> System {
+    let info = SystemRecord { name: new_name("New System"), sys_type, ..Default::default() };
+    let kind = if sys_type.is_trunked() {
+        SystemKind::Trunked { trunk: TrunkRecord::default(), sites: Vec::new(), tgid_groups: Vec::new() }
+    } else {
+        SystemKind::Conventional { groups: Vec::new() }
+    };
+    System { index: Default::default(), info, kind }
+}
+
+fn new_channel_group() -> ChannelGroup {
+    ChannelGroup {
+        index: Default::default(),
+        info: GroupRecord { name: new_name("New Group"), ..Default::default() },
+        channels: Vec::new(),
+    }
+}
+
+fn new_tgid_group() -> TgidGroup {
+    TgidGroup {
+        index: Default::default(),
+        info: GroupRecord { name: new_name("New TG Group"), group_type: GroupType::Tgid, ..Default::default() },
+        tgids: Vec::new(),
+    }
+}
+
+fn new_site() -> Site {
+    Site {
+        index: Default::default(),
+        info: SiteRecord { name: new_name("New Site"), ..Default::default() },
+        band_plan: None,
+        frequencies: Vec::new(),
+    }
+}
+
+fn new_channel() -> Channel {
+    Channel { index: Default::default(), info: ChannelRecord { name: new_name("New Channel"), ..Default::default() } }
+}
+
+fn new_trunk_freq() -> TrunkFreq {
+    TrunkFreq { index: Default::default(), info: Default::default() }
+}
+
+fn new_tgid() -> TgidEntry {
+    TgidEntry { index: Default::default(), info: TgidRecord { name: new_name("New TGID"), ..Default::default() } }
+}
+
+#[component]
+fn AddButton(label: &'static str, on_add: EventHandler<()>) -> Element {
     rsx! {
-        input { r#type: "number", step: "0.0001", min: "0", value: "{value}", disabled: true }
+        button { class: "add-button", onclick: move |_| on_add.call(()), "+ {label}" }
+    }
+}
+
+// ---- Input widgets: show the draft while editing, the stored value otherwise. ----
+
+fn text_field(kind: &'static str, editing: bool, shown: String, mut draft: Signal<String>) -> Element {
+    let value = if editing { draft() } else { shown };
+    rsx! {
+        input {
+            r#type: kind,
+            value: "{value}",
+            disabled: !editing,
+            oninput: move |e| draft.set(e.value()),
+        }
+    }
+}
+
+fn name_field(editing: bool, shown: String, mut draft: Signal<String>) -> Element {
+    let value = if editing { draft() } else { shown };
+    rsx! {
+        input {
+            r#type: "text",
+            maxlength: "{NAME_MAX}",
+            value: "{value}",
+            disabled: !editing,
+            oninput: move |e| draft.set(sanitize_name(&e.value())),
+        }
+    }
+}
+
+fn num_field(editing: bool, shown: String, mut draft: Signal<String>, max: u32, step: u32) -> Element {
+    let value = if editing { draft() } else { shown };
+    rsx! {
+        input {
+            r#type: "number",
+            min: "0",
+            max: "{max}",
+            step: "{step}",
+            value: "{value}",
+            disabled: !editing,
+            oninput: move |e| draft.set(e.value()),
+        }
+    }
+}
+
+fn freq_field(editing: bool, shown: &Option<Freq>, draft: Signal<String>) -> Element {
+    let value = if editing { draft() } else { freq_string(shown) };
+    let mut draft = draft;
+    rsx! {
+        input {
+            r#type: "number",
+            step: "0.0001",
+            min: "0",
+            value: "{value}",
+            disabled: !editing,
+            oninput: move |e| draft.set(e.value()),
+        }
         " MHz"
     }
 }
 
-fn modulation_select(v: &Option<Modulation>) -> Element {
-    let current = v.map(|m| m.to_string()).unwrap_or_default();
+fn check_field(editing: bool, shown: &Option<bool>, mut draft: Signal<bool>) -> Element {
+    let checked = if editing { draft() } else { shown.unwrap_or(false) };
     rsx! {
-        select { disabled: true, value: "{current}",
-            option { value: "", selected: v.is_none(), "-" }
-            for m in [
-                Modulation::Auto,
-                Modulation::Am,
-                Modulation::Fm,
-                Modulation::Nfm,
-                Modulation::Wfm,
-                Modulation::Fmb,
-            ] {
-                option { value: "{m}", selected: *v == Some(m), "{m}" }
+        input {
+            r#type: "checkbox",
+            checked,
+            disabled: !editing,
+            onchange: move |e| draft.set(e.checked()),
+        }
+    }
+}
+
+fn select_field(options: Vec<String>, editing: bool, shown: String, mut draft: Signal<String>) -> Element {
+    let current = if editing { draft() } else { shown };
+    rsx! {
+        select {
+            disabled: !editing,
+            value: "{current}",
+            onchange: move |e| draft.set(e.value()),
+            for o in options {
+                option { value: "{o}", selected: o == current, if o.is_empty() { "-" } else { "{o}" } }
             }
         }
     }
 }
 
+fn modulation_options() -> Vec<String> {
+    [Modulation::Auto, Modulation::Am, Modulation::Fm, Modulation::Nfm, Modulation::Wfm, Modulation::Fmb]
+        .into_iter()
+        .map(|m| m.to_string())
+        .fold(vec![String::new()], |mut v, m| {
+            v.push(m);
+            v
+        })
+}
 
-/// Placeholder edit button shown at the end of each system, group and row.
+/// Toggles an item between view and edit mode. Shown at the end of each system, group and row.
+/// `on_toggle` receives the new state: `true` on entering edit mode, `false` on leaving it.
 #[component]
-fn EditButton() -> Element {
+fn EditButton(mut editing: Signal<bool>, on_toggle: EventHandler<bool>) -> Element {
+    let title = if editing() { "Finish editing" } else { "Edit" };
     rsx! {
         button {
-            class: "edit-button",
-            title: "Edit",
+            class: if editing() { "edit-button active" } else { "edit-button" },
+            title,
             // Inside a <summary>, a click would otherwise toggle the <details>.
             onclick: move |evt| {
                 evt.prevent_default();
                 evt.stop_propagation();
+                let now = !editing();
+                editing.set(now);
+                on_toggle.call(now);
             },
             img { src: EDIT_ICON, alt: "Edit" }
         }
@@ -88,51 +419,106 @@ pub fn MemoryUsage() -> Element {
 /// The downloaded scan database as a collapsible tree.
 #[component]
 pub fn DatabaseView() -> Element {
+    let mut new_type = use_signal(|| SystemType::default().to_string());
     let db = SCAN_DATABASE.read();
-    let Some(db) = db.as_ref() else {
-        return rsx! {};
-    };
-    // let (systems, sites, channels) = db.counts();
+    let systems = db.as_ref().map(|db| db.systems.clone()).unwrap_or_default();
     rsx! {
         div { id: "database-view",
-            h2 { "Systems ({db.systems.len()})" }
-            for system in db.systems.iter() {
-                SystemView { system: system.clone() }
+            h2 { "Systems ({systems.len()})" }
+            for (si, system) in systems.into_iter().enumerate() {
+                SystemView { si, system }
+            }
+            div { class: "add-row",
+                AddButton {
+                    label: "Add System",
+                    on_add: move |_| {
+                        let sys_type = new_type().parse().unwrap_or_default();
+                        let system = new_system(sys_type);
+                        let mut db = SCAN_DATABASE.write();
+                        db.get_or_insert_with(ScanDatabase::default).systems.push(system);
+                    },
+                }
+                select {
+                    value: "{new_type}",
+                    onchange: move |e| new_type.set(e.value()),
+                    for t in SYSTEM_TYPES {
+                        option { value: "{t}", selected: t.to_string() == new_type(), "{system_type_label(t)}" }
+                    }
+                }
             }
         }
     }
 }
 
 #[component]
-fn SystemView(system: System) -> Element {
-    let name = system.info.name.to_string();
+fn SystemView(si: usize, system: System) -> Element {
+    let editing = use_signal(|| false);
+    let mut name = use_signal(String::new);
     let sys_type = format!("{:?}", system.info.sys_type);
+    let initial_name = system.info.name.to_string();
     let settings = match (system.info.sys_type, &system.kind) {
         (SystemType::P25Standard | SystemType::P25OneFreq, SystemKind::Trunked { trunk, .. }) => rsx! {
-            P25SystemSettingsView { info: system.info.clone(), trunk: trunk.clone() }
+            P25SystemSettingsView { si, info: system.info.clone(), trunk: trunk.clone() }
         },
-        _ => rsx! { SystemSettingsView { info: system.info.clone() } },
+        _ => rsx! { SystemSettingsView { si, info: system.info.clone() } },
     };
     rsx! {
         details {
             summary {
-                {text(name)}
+                {name_field(editing(), system.info.name.to_string(), name)}
                 " ({sys_type})"
-                EditButton {}
+                EditButton {
+                    editing,
+                    on_toggle: move |now: bool| {
+                        if now {
+                            name.set(initial_name.clone());
+                        } else {
+                            update_db(|db| {
+                                if let Some(s) = system_mut(db, si) {
+                                    s.info.name = commit_name(&name(), &s.info.name);
+                                }
+                            });
+                        }
+                    },
+                }
             }
             {settings}
             match system.kind {
                 SystemKind::Conventional { groups } => rsx! {
-                    for group in groups {
-                        ChannelGroupView { group }
+                    for (gi, group) in groups.into_iter().enumerate() {
+                        ChannelGroupView { si, gi, group }
+                    }
+                    AddButton {
+                        label: "Add Group",
+                        on_add: move |_| update_db(|db| {
+                            if let Some(g) = groups_mut(db, si) {
+                                g.push(new_channel_group());
+                            }
+                        }),
                     }
                 },
                 SystemKind::Trunked { sites, tgid_groups, .. } => rsx! {
-                    for site in sites {
-                        SiteView { site }
+                    for (sti, site) in sites.into_iter().enumerate() {
+                        SiteView { si, sti, site }
                     }
-                    for group in tgid_groups {
-                        TgidGroupView { group }
+                    AddButton {
+                        label: "Add Site",
+                        on_add: move |_| update_db(|db| {
+                            if let Some(s) = sites_mut(db, si) {
+                                s.push(new_site());
+                            }
+                        }),
+                    }
+                    for (gi, group) in tgid_groups.into_iter().enumerate() {
+                        TgidGroupView { si, gi, group }
+                    }
+                    AddButton {
+                        label: "Add Talkgroup Group",
+                        on_add: move |_| update_db(|db| {
+                            if let Some(g) = tgid_groups_mut(db, si) {
+                                g.push(new_tgid_group());
+                            }
+                        }),
                     }
                 },
             }
@@ -142,16 +528,51 @@ fn SystemView(system: System) -> Element {
 
 /// A system's quick key, startup key, lockout, hold/delay times, AGC and digital waiting settings.
 #[component]
-fn SystemSettingsView(info: SystemRecord) -> Element {
-    let key = |k: &Option<KeyAssignment>| match k {
-        Some(KeyAssignment::Key(n)) => n.to_string(),
-        _ => "None".to_string(),
-    };
+fn SystemSettingsView(si: usize, info: SystemRecord) -> Element {
+    let editing = use_signal(|| false);
+    let ed = editing();
+    let mut quick_key = use_signal(String::new);
+    let mut start_key = use_signal(String::new);
+    let mut lockout = use_signal(|| false);
+    let mut hold_time = use_signal(String::new);
+    let mut delay = use_signal(String::new);
+    let mut agc_analog = use_signal(|| false);
+    let mut agc_digital = use_signal(|| false);
+    let mut waiting = use_signal(String::new);
+    let loaded = info.clone();
     rsx! {
         details {
             summary {
                 "Settings"
-                EditButton {}
+                EditButton {
+                    editing,
+                    on_toggle: move |now: bool| {
+                        if now {
+                            quick_key.set(key_string(&loaded.quick_key));
+                            start_key.set(key_string(&loaded.start_key));
+                            lockout.set(loaded.lockout.unwrap_or(false));
+                            hold_time.set(opt_string(&loaded.hold_time));
+                            delay.set(opt_string(&loaded.delay));
+                            agc_analog.set(loaded.agc_analog.unwrap_or(false));
+                            agc_digital.set(loaded.agc_digital.unwrap_or(false));
+                            waiting.set(opt_string(&loaded.p25_waiting_ms));
+                        } else {
+                            update_db(|db| {
+                                if let Some(s) = system_mut(db, si) {
+                                    let i = &mut s.info;
+                                    i.quick_key = commit_key(&quick_key(), &i.quick_key, 99);
+                                    i.start_key = commit_key(&start_key(), &i.start_key, 9);
+                                    i.lockout = commit_bool(lockout(), &i.lockout);
+                                    i.hold_time = commit_int(&hold_time(), &i.hold_time, 255, 1);
+                                    i.delay = commit_opt(&delay(), &i.delay);
+                                    i.agc_analog = commit_bool(agc_analog(), &i.agc_analog);
+                                    i.agc_digital = commit_bool(agc_digital(), &i.agc_digital);
+                                    i.p25_waiting_ms = commit_int(&waiting(), &i.p25_waiting_ms, 1000, 100);
+                                }
+                            });
+                        }
+                    },
+                }
             }
             table {
                 thead {
@@ -163,42 +584,42 @@ fn SystemSettingsView(info: SystemRecord) -> Element {
                 tbody {
                     tr {
                         td { "Quick Key" }
-                        td { {text(key(&info.quick_key))} }
+                        td { {num_field(ed, key_string(&info.quick_key), quick_key, 99, 1)} }
                     }
                     tr {
                         td { "Startup Key" }
-                        td { {text(key(&info.start_key))} }
+                        td { {num_field(ed, key_string(&info.start_key), start_key, 9, 1)} }
                     }
                     tr {
                         td { "Lockout" }
-                        td { {checkbox(&info.lockout)} }
+                        td { {check_field(ed, &info.lockout, lockout)} }
                     }
                     tr {
                         td { "Hold Time" }
                         td {
-                            {opt_number(&info.hold_time)}
+                            {num_field(ed, opt_string(&info.hold_time), hold_time, 255, 1)}
                             " s"
                         }
                     }
                     tr {
                         td { "Delay Time" }
                         td {
-                            {opt_text(&info.delay)}
+                            {text_field("text", ed, opt_string(&info.delay), delay)}
                             " s"
                         }
                     }
                     tr {
                         td { "AGC Analog" }
-                        td { {checkbox(&info.agc_analog)} }
+                        td { {check_field(ed, &info.agc_analog, agc_analog)} }
                     }
                     tr {
                         td { "AGC Digital" }
-                        td { {checkbox(&info.agc_digital)} }
+                        td { {check_field(ed, &info.agc_digital, agc_digital)} }
                     }
                     tr {
                         td { "Digital Waiting" }
                         td {
-                            {opt_number(&info.p25_waiting_ms)}
+                            {num_field(ed, opt_string(&info.p25_waiting_ms), waiting, 1000, 100)}
                             " ms"
                         }
                     }
@@ -208,22 +629,54 @@ fn SystemSettingsView(info: SystemRecord) -> Element {
     }
 }
 
+const ID_MODES: [&str; 2] = ["ID Scan", "ID Search"];
+const ID_FORMATS: [&str; 2] = ["Decimal", "Hex"];
+
 /// P25 system settings: number tag, ID scan/search, delay, priority ID scan, ID format and AGC.
 #[component]
-fn P25SystemSettingsView(info: SystemRecord, trunk: TrunkRecord) -> Element {
-    let id_mode = match trunk.id_search {
-        Some(true) => "ID Search",
-        _ => "ID Scan",
-    };
-    let id_format = match trunk.hex_ids {
-        Some(true) => "Hex",
-        _ => "Decimal",
-    };
+fn P25SystemSettingsView(si: usize, info: SystemRecord, trunk: TrunkRecord) -> Element {
+    let editing = use_signal(|| false);
+    let ed = editing();
+    let mut number_tag = use_signal(String::new);
+    let mut id_mode = use_signal(String::new);
+    let mut delay = use_signal(String::new);
+    let mut priority = use_signal(|| false);
+    let mut id_format = use_signal(String::new);
+    let mut agc = use_signal(|| false);
+    let shown_mode = ID_MODES[(trunk.id_search == Some(true)) as usize].to_string();
+    let shown_format = ID_FORMATS[(trunk.hex_ids == Some(true)) as usize].to_string();
+    let (loaded_info, loaded_trunk) = (info.clone(), trunk.clone());
+    let (mode_now, format_now) = (shown_mode.clone(), shown_format.clone());
     rsx! {
         details {
             summary {
                 "Settings (P25)"
-                EditButton {}
+                EditButton {
+                    editing,
+                    on_toggle: move |now: bool| {
+                        if now {
+                            number_tag.set(tag_string(&loaded_info.number_tag));
+                            id_mode.set(mode_now.clone());
+                            delay.set(opt_string(&loaded_info.delay));
+                            priority.set(loaded_trunk.priority_id_scan.unwrap_or(false));
+                            id_format.set(format_now.clone());
+                            agc.set(loaded_info.agc_digital.unwrap_or(false));
+                        } else {
+                            update_db(|db| {
+                                if let Some(s) = system_mut(db, si) {
+                                    s.info.number_tag = commit_tag(&number_tag(), &s.info.number_tag);
+                                    s.info.delay = commit_opt(&delay(), &s.info.delay);
+                                    s.info.agc_digital = commit_bool(agc(), &s.info.agc_digital);
+                                    if let SystemKind::Trunked { trunk, .. } = &mut s.kind {
+                                        trunk.id_search = commit_bool(id_mode() == ID_MODES[1], &trunk.id_search);
+                                        trunk.priority_id_scan = commit_bool(priority(), &trunk.priority_id_scan);
+                                        trunk.hex_ids = commit_bool(id_format() == ID_FORMATS[1], &trunk.hex_ids);
+                                    }
+                                }
+                            });
+                        }
+                    },
+                }
             }
             table {
                 thead {
@@ -235,30 +688,30 @@ fn P25SystemSettingsView(info: SystemRecord, trunk: TrunkRecord) -> Element {
                 tbody {
                     tr {
                         td { "Number Tag" }
-                        td { {opt_text(&info.number_tag)} }
+                        td { {num_field(ed, tag_string(&info.number_tag), number_tag, 999, 1)} }
                     }
                     tr {
                         td { "ID Scan/Search" }
-                        td { {text(id_mode.to_string())} }
+                        td { {select_field(ID_MODES.map(String::from).to_vec(), ed, shown_mode, id_mode)} }
                     }
                     tr {
                         td { "Delay Time" }
                         td {
-                            {opt_text(&info.delay)}
+                            {text_field("text", ed, opt_string(&info.delay), delay)}
                             " s"
                         }
                     }
                     tr {
                         td { "Priority ID Scan" }
-                        td { {checkbox(&trunk.priority_id_scan)} }
+                        td { {check_field(ed, &trunk.priority_id_scan, priority)} }
                     }
                     tr {
                         td { "ID Format" }
-                        td { {text(id_format.to_string())} }
+                        td { {select_field(ID_FORMATS.map(String::from).to_vec(), ed, shown_format, id_format)} }
                     }
                     tr {
                         td { "AGC" }
-                        td { {checkbox(&info.agc_digital)} }
+                        td { {check_field(ed, &info.agc_digital, agc)} }
                     }
                 }
             }
@@ -268,16 +721,45 @@ fn P25SystemSettingsView(info: SystemRecord, trunk: TrunkRecord) -> Element {
 
 /// A channel group's quick key, lockout and location (geofence) settings.
 #[component]
-fn GroupSettingsView(info: GroupRecord) -> Element {
-    let quick_key = match info.quick_key {
-        Some(KeyAssignment::Key(n)) => n.to_string(),
-        _ => "None".to_string(),
-    };
+fn GroupSettingsView(si: usize, gi: usize, info: GroupRecord) -> Element {
+    let editing = use_signal(|| false);
+    let ed = editing();
+    let mut quick_key = use_signal(String::new);
+    let mut lockout = use_signal(|| false);
+    let mut latitude = use_signal(String::new);
+    let mut longitude = use_signal(String::new);
+    let mut range = use_signal(String::new);
+    let mut gps = use_signal(|| false);
+    let loaded = info.clone();
     rsx! {
         details {
             summary {
                 "Settings"
-                EditButton {}
+                EditButton {
+                    editing,
+                    on_toggle: move |now: bool| {
+                        if now {
+                            quick_key.set(key_string(&loaded.quick_key));
+                            lockout.set(loaded.lockout.unwrap_or(false));
+                            latitude.set(opt_string(&loaded.geofence.latitude));
+                            longitude.set(opt_string(&loaded.geofence.longitude));
+                            range.set(opt_string(&loaded.geofence.range));
+                            gps.set(loaded.geofence.enabled.unwrap_or(false));
+                        } else {
+                            update_db(|db| {
+                                if let Some(g) = groups_mut(db, si).and_then(|g| g.get_mut(gi)) {
+                                    let i = &mut g.info;
+                                    i.quick_key = commit_key(&quick_key(), &i.quick_key, 99);
+                                    i.lockout = commit_bool(lockout(), &i.lockout);
+                                    i.geofence.latitude = commit_opt(&latitude(), &i.geofence.latitude);
+                                    i.geofence.longitude = commit_opt(&longitude(), &i.geofence.longitude);
+                                    i.geofence.range = commit_opt(&range(), &i.geofence.range);
+                                    i.geofence.enabled = commit_bool(gps(), &i.geofence.enabled);
+                                }
+                            });
+                        }
+                    },
+                }
             }
             table {
                 thead {
@@ -289,27 +771,27 @@ fn GroupSettingsView(info: GroupRecord) -> Element {
                 tbody {
                     tr {
                         td { "Quick Key" }
-                        td { {text(quick_key)} }
+                        td { {num_field(ed, key_string(&info.quick_key), quick_key, 99, 1)} }
                     }
                     tr {
                         td { "Lockout" }
-                        td { {checkbox(&info.lockout)} }
+                        td { {check_field(ed, &info.lockout, lockout)} }
                     }
                     tr {
                         td { "Latitude" }
-                        td { {opt_text(&info.geofence.latitude)} }
+                        td { {text_field("text", ed, opt_string(&info.geofence.latitude), latitude)} }
                     }
                     tr {
                         td { "Longitude" }
-                        td { {opt_text(&info.geofence.longitude)} }
+                        td { {text_field("text", ed, opt_string(&info.geofence.longitude), longitude)} }
                     }
                     tr {
                         td { "Range" }
-                        td { {opt_number(&info.geofence.range)} }
+                        td { {text_field("number", ed, opt_string(&info.geofence.range), range)} }
                     }
                     tr {
                         td { "GPS Enable" }
-                        td { {checkbox(&info.geofence.enabled)} }
+                        td { {check_field(ed, &info.geofence.enabled, gps)} }
                     }
                 }
             }
@@ -318,18 +800,33 @@ fn GroupSettingsView(info: GroupRecord) -> Element {
 }
 
 #[component]
-fn ChannelGroupView(group: ChannelGroup) -> Element {
-    let name = group.info.name.to_string();
+fn ChannelGroupView(si: usize, gi: usize, group: ChannelGroup) -> Element {
+    let editing = use_signal(|| false);
+    let mut name = use_signal(String::new);
     let count = group.channels.len();
+    let initial_name = group.info.name.to_string();
     rsx! {
         details {
             summary {
                 "Group: "
-                {text(name)}
+                {name_field(editing(), group.info.name.to_string(), name)}
                 " ({count} channels)"
-                EditButton {}
+                EditButton {
+                    editing,
+                    on_toggle: move |now: bool| {
+                        if now {
+                            name.set(initial_name.clone());
+                        } else {
+                            update_db(|db| {
+                                if let Some(g) = groups_mut(db, si).and_then(|g| g.get_mut(gi)) {
+                                    g.info.name = commit_name(&name(), &g.info.name);
+                                }
+                            });
+                        }
+                    },
+                }
             }
-            GroupSettingsView { info: group.info.clone() }
+            GroupSettingsView { si, gi, info: group.info.clone() }
             table {
                 thead {
                     tr {
@@ -342,16 +839,66 @@ fn ChannelGroupView(group: ChannelGroup) -> Element {
                     }
                 }
                 tbody {
-                    for channel in group.channels.iter() {
-                        tr {
-                            td { {text(channel.info.name.to_string())} }
-                            td { {freq_input(&channel.info.freq)} }
-                            td { {modulation_select(&channel.info.modulation)} }
-                            td { {opt_text(&channel.info.tone)} }
-                            td { {checkbox(&channel.info.lockout)} }
-                            td { EditButton {} }
-                        }
+                    for (ci, channel) in group.channels.into_iter().enumerate() {
+                        ChannelRow { si, gi, ci, channel }
                     }
+                }
+            }
+            AddButton {
+                label: "Add Channel",
+                on_add: move |_| update_db(|db| {
+                    if let Some(g) = groups_mut(db, si).and_then(|g| g.get_mut(gi)) {
+                        g.channels.push(new_channel());
+                    }
+                }),
+            }
+        }
+    }
+}
+
+#[component]
+fn ChannelRow(si: usize, gi: usize, ci: usize, channel: Channel) -> Element {
+    let editing = use_signal(|| false);
+    let ed = editing();
+    let mut name = use_signal(String::new);
+    let mut freq = use_signal(String::new);
+    let mut modulation = use_signal(String::new);
+    let mut tone = use_signal(String::new);
+    let mut lockout = use_signal(|| false);
+    let loaded = channel.info.clone();
+    rsx! {
+        tr {
+            td { {name_field(ed, channel.info.name.to_string(), name)} }
+            td { {freq_field(ed, &channel.info.freq, freq)} }
+            td { {select_field(modulation_options(), ed, opt_string(&channel.info.modulation), modulation)} }
+            td { {text_field("text", ed, opt_string(&channel.info.tone), tone)} }
+            td { {check_field(ed, &channel.info.lockout, lockout)} }
+            td {
+                EditButton {
+                    editing,
+                    on_toggle: move |now: bool| {
+                        if now {
+                            name.set(loaded.name.to_string());
+                            freq.set(freq_string(&loaded.freq));
+                            modulation.set(opt_string(&loaded.modulation));
+                            tone.set(opt_string(&loaded.tone));
+                            lockout.set(loaded.lockout.unwrap_or(false));
+                        } else {
+                            update_db(|db| {
+                                let channel = groups_mut(db, si)
+                                    .and_then(|g| g.get_mut(gi))
+                                    .and_then(|g| g.channels.get_mut(ci));
+                                if let Some(c) = channel {
+                                    let i = &mut c.info;
+                                    i.name = commit_name(&name(), &i.name);
+                                    i.freq = commit_freq(&freq(), &i.freq);
+                                    i.modulation = commit_opt(&modulation(), &i.modulation);
+                                    i.tone = commit_opt(&tone(), &i.tone);
+                                    i.lockout = commit_bool(lockout(), &i.lockout);
+                                }
+                            });
+                        }
+                    },
                 }
             }
         }
@@ -359,9 +906,11 @@ fn ChannelGroupView(group: ChannelGroup) -> Element {
 }
 
 #[component]
-fn SiteView(site: Site) -> Element {
-    let name = site.info.name.to_string();
+fn SiteView(si: usize, sti: usize, site: Site) -> Element {
+    let editing = use_signal(|| false);
+    let mut name = use_signal(String::new);
     let count = site.frequencies.len();
+    let initial_name = site.info.name.to_string();
     let plan = match &site.band_plan {
         Some(BandPlan::Motorola(_)) => "Motorola custom band plan",
         Some(BandPlan::P25(_)) => "P25 band plan",
@@ -371,9 +920,22 @@ fn SiteView(site: Site) -> Element {
         details {
             summary {
                 "Site: "
-                {text(name)}
+                {name_field(editing(), site.info.name.to_string(), name)}
                 " ({count} frequencies, {plan})"
-                EditButton {}
+                EditButton {
+                    editing,
+                    on_toggle: move |now: bool| {
+                        if now {
+                            name.set(initial_name.clone());
+                        } else {
+                            update_db(|db| {
+                                if let Some(s) = sites_mut(db, si).and_then(|s| s.get_mut(sti)) {
+                                    s.info.name = commit_name(&name(), &s.info.name);
+                                }
+                            });
+                        }
+                    },
+                }
             }
             table {
                 thead {
@@ -385,14 +947,57 @@ fn SiteView(site: Site) -> Element {
                     }
                 }
                 tbody {
-                    for freq in site.frequencies.iter() {
-                        tr {
-                            td { {freq_input(&freq.info.freq)} }
-                            td { {opt_number(&freq.info.lcn)} }
-                            td { {checkbox(&freq.info.lockout)} }
-                            td { EditButton {} }
-                        }
+                    for (fi, freq) in site.frequencies.into_iter().enumerate() {
+                        TrunkFreqRow { si, sti, fi, freq }
                     }
+                }
+            }
+            AddButton {
+                label: "Add Frequency",
+                on_add: move |_| update_db(|db| {
+                    if let Some(s) = sites_mut(db, si).and_then(|s| s.get_mut(sti)) {
+                        s.frequencies.push(new_trunk_freq());
+                    }
+                }),
+            }
+        }
+    }
+}
+
+#[component]
+fn TrunkFreqRow(si: usize, sti: usize, fi: usize, freq: TrunkFreq) -> Element {
+    let editing = use_signal(|| false);
+    let ed = editing();
+    let mut frequency = use_signal(String::new);
+    let mut lcn = use_signal(String::new);
+    let mut lockout = use_signal(|| false);
+    let loaded = freq.info.clone();
+    rsx! {
+        tr {
+            td { {freq_field(ed, &freq.info.freq, frequency)} }
+            td { {text_field("number", ed, opt_string(&freq.info.lcn), lcn)} }
+            td { {check_field(ed, &freq.info.lockout, lockout)} }
+            td {
+                EditButton {
+                    editing,
+                    on_toggle: move |now: bool| {
+                        if now {
+                            frequency.set(freq_string(&loaded.freq));
+                            lcn.set(opt_string(&loaded.lcn));
+                            lockout.set(loaded.lockout.unwrap_or(false));
+                        } else {
+                            update_db(|db| {
+                                let entry = sites_mut(db, si)
+                                    .and_then(|s| s.get_mut(sti))
+                                    .and_then(|s| s.frequencies.get_mut(fi));
+                                if let Some(f) = entry {
+                                    f.info.freq = commit_freq(&frequency(), &f.info.freq);
+                                    f.info.lcn = commit_opt(&lcn(), &f.info.lcn);
+                                    f.info.lockout = commit_bool(lockout(), &f.info.lockout);
+                                }
+                            });
+                        }
+                    },
                 }
             }
         }
@@ -400,16 +1005,31 @@ fn SiteView(site: Site) -> Element {
 }
 
 #[component]
-fn TgidGroupView(group: TgidGroup) -> Element {
-    let name = group.info.name.to_string();
+fn TgidGroupView(si: usize, gi: usize, group: TgidGroup) -> Element {
+    let editing = use_signal(|| false);
+    let mut name = use_signal(String::new);
     let count = group.tgids.len();
+    let initial_name = group.info.name.to_string();
     rsx! {
         details {
             summary {
                 "Talkgroups: "
-                {text(name)}
+                {name_field(editing(), group.info.name.to_string(), name)}
                 " ({count})"
-                EditButton {}
+                EditButton {
+                    editing,
+                    on_toggle: move |now: bool| {
+                        if now {
+                            name.set(initial_name.clone());
+                        } else {
+                            update_db(|db| {
+                                if let Some(g) = tgid_groups_mut(db, si).and_then(|g| g.get_mut(gi)) {
+                                    g.info.name = commit_name(&name(), &g.info.name);
+                                }
+                            });
+                        }
+                    },
+                }
             }
             table {
                 thead {
@@ -422,15 +1042,61 @@ fn TgidGroupView(group: TgidGroup) -> Element {
                     }
                 }
                 tbody {
-                    for tgid in group.tgids.iter() {
-                        tr {
-                            td { {text(tgid.info.name.to_string())} }
-                            td { {opt_text(&tgid.info.tgid)} }
-                            td { {checkbox(&tgid.info.lockout)} }
-                            td { {checkbox(&tgid.info.priority)} }
-                            td { EditButton {} }
-                        }
+                    for (ti, tgid) in group.tgids.into_iter().enumerate() {
+                        TgidRow { si, gi, ti, tgid }
                     }
+                }
+            }
+            AddButton {
+                label: "Add Talkgroup",
+                on_add: move |_| update_db(|db| {
+                    if let Some(g) = tgid_groups_mut(db, si).and_then(|g| g.get_mut(gi)) {
+                        g.tgids.push(new_tgid());
+                    }
+                }),
+            }
+        }
+    }
+}
+
+#[component]
+fn TgidRow(si: usize, gi: usize, ti: usize, tgid: TgidEntry) -> Element {
+    let editing = use_signal(|| false);
+    let ed = editing();
+    let mut name = use_signal(String::new);
+    let mut id = use_signal(String::new);
+    let mut lockout = use_signal(|| false);
+    let mut priority = use_signal(|| false);
+    let loaded = tgid.info.clone();
+    rsx! {
+        tr {
+            td { {name_field(ed, tgid.info.name.to_string(), name)} }
+            td { {text_field("text", ed, opt_string(&tgid.info.tgid), id)} }
+            td { {check_field(ed, &tgid.info.lockout, lockout)} }
+            td { {check_field(ed, &tgid.info.priority, priority)} }
+            td {
+                EditButton {
+                    editing,
+                    on_toggle: move |now: bool| {
+                        if now {
+                            name.set(loaded.name.to_string());
+                            id.set(opt_string(&loaded.tgid));
+                            lockout.set(loaded.lockout.unwrap_or(false));
+                            priority.set(loaded.priority.unwrap_or(false));
+                        } else {
+                            update_db(|db| {
+                                let entry = tgid_groups_mut(db, si)
+                                    .and_then(|g| g.get_mut(gi))
+                                    .and_then(|g| g.tgids.get_mut(ti));
+                                if let Some(t) = entry {
+                                    t.info.name = commit_name(&name(), &t.info.name);
+                                    t.info.tgid = commit_opt(&id(), &t.info.tgid);
+                                    t.info.lockout = commit_bool(lockout(), &t.info.lockout);
+                                    t.info.priority = commit_bool(priority(), &t.info.priority);
+                                }
+                            });
+                        }
+                    },
                 }
             }
         }

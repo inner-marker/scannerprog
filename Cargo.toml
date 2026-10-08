@@ -9,7 +9,9 @@ edition = "2021"
 [dependencies]
 chrono = "0.4.45"
 dioxus = { version = "0.7.1", features = ["router"] }
+dioxus-primitives = { git = "https://github.com/DioxusLabs/components", version = "0.0.1", default-features = false }
 dirs = "7.0.0"
+rfd = "0.17.2"
 ron = "0.12.2"
 serde = { version = "1.0.229", features = ["derive"] }
 serialport = { version = "4.10.1", default-features = false }
