@@ -55,7 +55,19 @@ jobs:
         if: matrix.platform != 'linux'
         run: dx bundle --release  # Produces the platform package
 
+      # Strip host-sensitive libs (WebKit, Wayland, GTK stack) from the AppImage and repack it
+      # WebGTK causes crashes if there are version mismatches with host libraries, so we remove them from the AppImage.
+      - name: Fix AppImage (Remove host-sensitive libs)
+        if: matrix.platform == 'linux'
+        run: |
+          # Find every AppImage dx produced (path depth varies, so search rather than glob)
+          find target/dx -path '*/bundle/linux/appimage/*.AppImage' -print0 |
+            while IFS= read -r -d '' f; do
+              bash scripts/fix-appimage.sh "$f"   # 'bash' avoids needing the +x bit in git
+            done
+
       # Extract release notes for the current version from the CHANGELOG.md
+      # Release notes header must be in the format "## [0.0.0]" or "## v[0.0.0]"
       - name: Extract release notes from CHANGELOG
         shell: bash  # Forces bash on the Windows runner too (Git Bash)
         run: |

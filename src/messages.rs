@@ -2,6 +2,7 @@
 
 use dioxus::prelude::*;
 
+/// Severity shown beside a queued note, caution, or warning.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum MessageKind {
     Warning,
@@ -10,6 +11,7 @@ pub enum MessageKind {
 }
 
 impl MessageKind {
+    /// Returns the text displayed in the message list.
     fn label(self) -> &'static str {
         match self {
             Self::Warning => "Warning",
@@ -18,6 +20,7 @@ impl MessageKind {
         }
     }
 
+    /// Selects the matching visual style for this severity.
     fn class(self) -> &'static str {
         match self {
             Self::Warning => "message-warning",
@@ -27,6 +30,7 @@ impl MessageKind {
     }
 }
 
+/// One queued message, including its source and whether the user has acknowledged it.
 #[derive(Clone, PartialEq, Debug)]
 pub struct Message {
     pub id: u64,
@@ -38,10 +42,14 @@ pub struct Message {
     pub timestamp: chrono::DateTime<chrono::Local>,
 }
 
+/// Messages waiting to be acknowledged or dismissed.
 pub static MESSAGES: GlobalSignal<Vec<Message>> = Signal::global(Vec::new);
+/// Whether the floating message panel is currently expanded.
 static MESSAGES_OPEN: GlobalSignal<bool> = Signal::global(|| false);
+/// Monotonic IDs keep each message row distinct as the queue changes.
 static NEXT_ID: GlobalSignal<u64> = Signal::global(|| 0);
 
+/// Adds a fresh message and assigns it a unique ID and local timestamp.
 pub fn push_message(kind: MessageKind, source: &'static str, text: impl Into<String>) {
     let id = {
         let mut next = NEXT_ID.write();
@@ -58,12 +66,14 @@ pub fn push_message(kind: MessageKind, source: &'static str, text: impl Into<Str
     });
 }
 
+/// Marks one queued message as seen without removing it.
 fn acknowledge(id: u64) {
     if let Some(m) = MESSAGES.write().iter_mut().find(|m| m.id == id) {
         m.acknowledged = true;
     }
 }
 
+/// Removes one message from the queue.
 fn dismiss(id: u64) {
     MESSAGES.write().retain(|m| m.id != id);
 }
@@ -71,6 +81,7 @@ fn dismiss(id: u64) {
 /// Floating "Messages" button and the queue panel it toggles.
 #[component]
 pub fn MessageCenter() -> Element {
+    // Read the queue once to drive both the badge and the newest-first list.
     let messages = MESSAGES.read();
     let unacknowledged = messages.iter().filter(|m| !m.acknowledged).count();
     let open = *MESSAGES_OPEN.read();
@@ -88,6 +99,7 @@ pub fn MessageCenter() -> Element {
                 span { class: "messages-badge", "{unacknowledged}" }
             }
         }
+        // Keep acknowledged messages visible until the user clears or dismisses them.
         if open {
             div { id: "messages-panel",
                 div { class: "messages-header",

@@ -1,5 +1,20 @@
 # Changelog
 
+## [Unreleased] - Refactoring for Multiple Models
+
+This update primarily focuses on refactoring the codebase to support multiple Uniden scanner models.
+
+At this initial stage, there are now three models supported:
+
+- Uniden BCD325P2
+- Uniden BCD396XT ‼️
+- Uniden BC346XT ‼️
+
+‼️ = Untested with a Physical Device
+
+### Additional Changes
+
+- Add comments throughout the codebase for better readability and maintainability
 
 ## [0.1.1] - Build Correction
 

@@ -21,3 +21,24 @@ default = ["desktop"]
 web = ["dioxus/web"]
 desktop = ["dioxus/desktop"]
 mobile = ["dioxus/mobile"]
+
+
+[lints.clippy]
+# Safety and Correctness
+unwrap_used = "deny"
+expect_used = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+
+# Code Quality (Pedantic/Restriction)
+pedantic = { level = "warn", priority = -1 }
+clone_on_ref_ptr = "warn"
+dbg_macro = "warn"
+exit = "warn"
+unused_result_ok = "warn"
+
+# Allowances for Pedantic Group (to reduce noise)
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"

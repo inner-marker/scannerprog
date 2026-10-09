@@ -3,13 +3,14 @@ use crate::confirm::confirm;
 use std::fmt::Display;
 use std::str::FromStr;
 
-use crate::scanner_db::{
+use crate::database::{
     NumberTag,
     BandPlan, Channel, ChannelGroup, Freq, GroupRecord, GroupType, KeyAssignment, Modulation, Name, ScanDatabase, Site, System,
-    SystemKind, SystemRecord, SiteRecord, TgidRecord, ChannelRecord, SystemType, TgidEntry, TgidGroup, TrunkFreq, TrunkRecord, MAX_BLOCKS,
+    SystemKind, SystemRecord, SiteRecord, TgidRecord, ChannelRecord, SystemType, TgidEntry, TgidGroup, TrunkFreq, TrunkRecord
 };
-use crate::scanner_interaction::{SCAN_DATABASE, VALIDATION};
+use crate::scanner_interaction::{active_model, SCAN_DATABASE, VALIDATION};
 
+/// Pencil icon used by the inline edit controls.
 const EDIT_ICON: Asset = asset!("/assets/icons/icons8-edit-pencil-24.svg");
 
 // ---- Turning record values into editable text, and edited text back into values. ----
@@ -82,7 +83,7 @@ fn key_string(v: &Option<KeyAssignment>) -> String {
     }
 }
 
-/// Rounds to the nearest multiple of `step` and clamps into `0..=max`. `None` if not a number.
+/// Rounds a numeric draft to `step`, clamps it into `0..=max`, or returns `None` if it is not a number.
 fn clamp_int(draft: &str, max: u32, step: u32) -> Option<u32> {
     let n: f64 = draft.trim().parse().ok().filter(|n: &f64| n.is_finite())?;
     let step = step as f64;
@@ -90,7 +91,7 @@ fn clamp_int(draft: &str, max: u32, step: u32) -> Option<u32> {
     Some(n.clamp(0.0, max as f64 / step * step) as u32)
 }
 
-/// Empty means unassigned. Out-of-range numbers are clamped to `max`.
+/// Commits a key number up to `max`, preserving the distinction between blank and unassigned.
 fn commit_key(draft: &str, orig: &Option<KeyAssignment>, max: u8) -> Option<KeyAssignment> {
     if draft.trim().is_empty() {
         return match orig {
@@ -101,6 +102,7 @@ fn commit_key(draft: &str, orig: &Option<KeyAssignment>, max: u8) -> Option<KeyA
     clamp_int(draft, max as u32, 1).map(|n| KeyAssignment::Key(n as u8)).or(*orig)
 }
 
+/// Shows a numbered tag as text, leaving unassigned tags blank.
 fn tag_string(v: &Option<NumberTag>) -> String {
     match v {
         Some(NumberTag::Tag(n)) => n.to_string(),
@@ -108,6 +110,7 @@ fn tag_string(v: &Option<NumberTag>) -> String {
     }
 }
 
+/// Commits a numbered tag, preserving an explicit unassigned value when the draft is blank.
 fn commit_tag(draft: &str, orig: &Option<NumberTag>) -> Option<NumberTag> {
     if draft.trim().is_empty() {
         return match orig {
@@ -126,10 +129,12 @@ fn commit_int<T: TryFrom<u32> + Copy>(draft: &str, orig: &Option<T>, max: u32, s
     clamp_int(draft, max, step).and_then(|n| T::try_from(n).ok()).or(*orig)
 }
 
+/// Shows an optional frequency in MHz for the editor.
 fn freq_string(v: &Option<Freq>) -> String {
     v.map(|f| f.mhz().to_string()).unwrap_or_default()
 }
 
+/// Parses a MHz frequency draft and stores it as rounded Hz, keeping the old value if invalid.
 fn commit_freq(draft: &str, orig: &Option<Freq>) -> Option<Freq> {
     let draft = draft.trim();
     if draft.is_empty() {
@@ -141,12 +146,15 @@ fn commit_freq(draft: &str, orig: &Option<Freq>) -> Option<Freq> {
     }
 }
 
+/// Maximum name length accepted by this scanner editor.
 const NAME_MAX: usize = 16;
 
+/// Reports whether a character is allowed in a scanner name.
 fn name_char_ok(c: char) -> bool {
     c.is_ascii_alphanumeric() || " !@#$%^&*()-/<>.?".contains(c)
 }
 
+/// Removes unsupported characters and truncates a draft to the scanner name limit.
 fn sanitize_name(text: &str) -> String {
     text.chars().filter(|c| name_char_ok(*c)).take(NAME_MAX).collect()
 }
@@ -156,7 +164,7 @@ fn commit_name(draft: &str, orig: &Name) -> Name {
     Name::new(sanitize_name(draft).trim()).unwrap_or_else(|_| orig.clone())
 }
 
-/// Keeps `None` when the box was never ticked.
+/// Preserves an unset boolean unless the user changes its displayed value.
 fn commit_bool(draft: bool, orig: &Option<bool>) -> Option<bool> {
     if draft == orig.unwrap_or(false) {
         *orig
@@ -167,10 +175,12 @@ fn commit_bool(draft: bool, orig: &Option<bool>) -> Option<bool> {
 
 // ---- Database lookups by position, used to write edits back. ----
 
+/// Looks up a mutable system by its current position in the database.
 fn system_mut(db: &mut ScanDatabase, si: usize) -> Option<&mut System> {
     db.systems.get_mut(si)
 }
 
+/// Gets the conventional channel groups for a system, if that system has them.
 fn groups_mut(db: &mut ScanDatabase, si: usize) -> Option<&mut Vec<ChannelGroup>> {
     match &mut system_mut(db, si)?.kind {
         SystemKind::Conventional { groups } => Some(groups),
@@ -178,6 +188,7 @@ fn groups_mut(db: &mut ScanDatabase, si: usize) -> Option<&mut Vec<ChannelGroup>
     }
 }
 
+/// Gets the trunked sites for a system, if that system has them.
 fn sites_mut(db: &mut ScanDatabase, si: usize) -> Option<&mut Vec<Site>> {
     match &mut system_mut(db, si)?.kind {
         SystemKind::Trunked { sites, .. } => Some(sites),
@@ -185,6 +196,7 @@ fn sites_mut(db: &mut ScanDatabase, si: usize) -> Option<&mut Vec<Site>> {
     }
 }
 
+/// Gets the talkgroup groups for a trunked system, if present.
 fn tgid_groups_mut(db: &mut ScanDatabase, si: usize) -> Option<&mut Vec<TgidGroup>> {
     match &mut system_mut(db, si)?.kind {
         SystemKind::Trunked { tgid_groups, .. } => Some(tgid_groups),
@@ -192,6 +204,7 @@ fn tgid_groups_mut(db: &mut ScanDatabase, si: usize) -> Option<&mut Vec<TgidGrou
     }
 }
 
+/// Applies an edit only when a database is currently loaded.
 fn update_db(f: impl FnOnce(&mut ScanDatabase)) {
     if let Some(db) = SCAN_DATABASE.write().as_mut() {
         f(db);
@@ -204,6 +217,7 @@ fn update_db(f: impl FnOnce(&mut ScanDatabase)) {
 static DELETED: GlobalSignal<std::collections::HashMap<String, (u64, usize)>> =
     Signal::global(Default::default);
 
+/// Builds a stable row key, remounting only rows shifted by a deletion in this list.
 fn item_key(list: &str, i: usize) -> String {
     match DELETED.read().get(list) {
         Some(&(generation, from)) if i >= from => format!("{list}-{i}-{generation}"),
@@ -211,28 +225,36 @@ fn item_key(list: &str, i: usize) -> String {
     }
 }
 
+/// Builds the render key for this database row.
 fn key_systems(i: usize) -> String {
     item_key("systems", i)
 }
+/// Builds the render key for this database row.
 fn key_groups(si: usize, i: usize) -> String {
     item_key(&format!("s{si}/groups"), i)
 }
+/// Builds the render key for this database row.
 fn key_sites(si: usize, i: usize) -> String {
     item_key(&format!("s{si}/sites"), i)
 }
+/// Builds the render key for this database row.
 fn key_tgid_groups(si: usize, i: usize) -> String {
     item_key(&format!("s{si}/tgroups"), i)
 }
+/// Builds the render key for this database row.
 fn key_channels(si: usize, gi: usize, i: usize) -> String {
     item_key(&format!("s{si}/g{gi}/channels"), i)
 }
+/// Builds the render key for this database row.
 fn key_freqs(si: usize, sti: usize, i: usize) -> String {
     item_key(&format!("s{si}/t{sti}/freqs"), i)
 }
+/// Builds the render key for this database row.
 fn key_tgids(si: usize, gi: usize, i: usize) -> String {
     item_key(&format!("s{si}/tg{gi}/tgids"), i)
 }
 
+/// Deletes an item and invalidates editor state for rows whose positions may have shifted.
 fn delete_item(list: String, i: usize, f: impl FnOnce(&mut ScanDatabase)) {
     update_db(f);
     let mut deleted = DELETED.write();
@@ -244,18 +266,8 @@ fn delete_item(list: String, i: usize, f: impl FnOnce(&mut ScanDatabase)) {
 
 // ---- Adding new items. New items get a placeholder name and default settings. ----
 
-const SYSTEM_TYPES: [SystemType; 9] = [
-    SystemType::Conventional,
-    SystemType::Motorola,
-    SystemType::Edacs,
-    SystemType::EdacsScat,
-    SystemType::Ltr,
-    SystemType::P25Standard,
-    SystemType::P25OneFreq,
-    SystemType::MotoTrbo,
-    SystemType::DmrOneFreq,
-];
 
+/// Returns the user-facing name for a selectable system type.
 fn system_type_label(t: SystemType) -> &'static str {
     match t {
         SystemType::Conventional => "Conventional",
@@ -270,10 +282,12 @@ fn system_type_label(t: SystemType) -> &'static str {
     }
 }
 
+/// Creates a valid scanner name, falling back to an empty default if needed.
 fn new_name(text: &str) -> Name {
     Name::new(text).unwrap_or_default()
 }
 
+/// Makes a new system with the correct conventional or trunked shape for its type.
 fn new_system(sys_type: SystemType) -> System {
     let info = SystemRecord { name: new_name("New System"), sys_type, ..Default::default() };
     let kind = if sys_type.is_trunked() {
@@ -284,6 +298,8 @@ fn new_system(sys_type: SystemType) -> System {
     System { index: Default::default(), info, kind }
 }
 
+/// Makes an empty conventional group with a visible placeholder name.
+/// Makes a channel with a placeholder name and default settings.
 fn new_channel_group() -> ChannelGroup {
     ChannelGroup {
         index: Default::default(),
@@ -292,6 +308,8 @@ fn new_channel_group() -> ChannelGroup {
     }
 }
 
+/// Makes an empty talkgroup group with a visible placeholder name.
+/// Makes a talkgroup entry with a placeholder name.
 fn new_tgid_group() -> TgidGroup {
     TgidGroup {
         index: Default::default(),
@@ -300,6 +318,7 @@ fn new_tgid_group() -> TgidGroup {
     }
 }
 
+/// Makes an empty trunked site ready for its band plan and frequencies.
 fn new_site() -> Site {
     Site {
         index: Default::default(),
@@ -313,6 +332,7 @@ fn new_channel() -> Channel {
     Channel { index: Default::default(), info: ChannelRecord { name: new_name("New Channel"), ..Default::default() } }
 }
 
+/// Makes an empty trunking frequency entry.
 fn new_trunk_freq() -> TrunkFreq {
     TrunkFreq { index: Default::default(), info: Default::default() }
 }
@@ -321,6 +341,7 @@ fn new_tgid() -> TgidEntry {
     TgidEntry { index: Default::default(), info: TgidRecord { name: new_name("New TGID"), ..Default::default() } }
 }
 
+/// Button that asks the parent to add a new item.
 #[component]
 fn AddButton(label: &'static str, on_add: EventHandler<()>) -> Element {
     rsx! {
@@ -330,6 +351,7 @@ fn AddButton(label: &'static str, on_add: EventHandler<()>) -> Element {
 
 // ---- Input widgets: show the draft while editing, the stored value otherwise. ----
 
+/// Text input that edits a temporary draft and otherwise displays the stored value.
 fn text_field(kind: &'static str, editing: bool, shown: String, mut draft: Signal<String>) -> Element {
     let value = if editing { draft() } else { shown };
     rsx! {
@@ -342,6 +364,7 @@ fn text_field(kind: &'static str, editing: bool, shown: String, mut draft: Signa
     }
 }
 
+/// Name input that filters unsupported characters as the user types.
 fn name_field(editing: bool, shown: String, mut draft: Signal<String>) -> Element {
     let value = if editing { draft() } else { shown };
     rsx! {
@@ -355,6 +378,7 @@ fn name_field(editing: bool, shown: String, mut draft: Signal<String>) -> Elemen
     }
 }
 
+/// Numeric input with the scanner editor range and step shown to the browser.
 fn num_field(editing: bool, shown: String, mut draft: Signal<String>, max: u32, step: u32) -> Element {
     let value = if editing { draft() } else { shown };
     rsx! {
@@ -370,6 +394,7 @@ fn num_field(editing: bool, shown: String, mut draft: Signal<String>, max: u32, 
     }
 }
 
+/// Frequency input displayed in MHz and committed to the database as Hz.
 fn freq_field(editing: bool, shown: &Option<Freq>, draft: Signal<String>) -> Element {
     let value = if editing { draft() } else { freq_string(shown) };
     let mut draft = draft;
@@ -386,6 +411,7 @@ fn freq_field(editing: bool, shown: &Option<Freq>, draft: Signal<String>) -> Ele
     }
 }
 
+/// Checkbox that keeps an unset boolean distinct until the user changes it.
 fn check_field(editing: bool, shown: &Option<bool>, mut draft: Signal<bool>) -> Element {
     let checked = if editing { draft() } else { shown.unwrap_or(false) };
     rsx! {
@@ -398,6 +424,7 @@ fn check_field(editing: bool, shown: &Option<bool>, mut draft: Signal<bool>) -> 
     }
 }
 
+/// Selection input that switches between the current value and an editable draft.
 fn select_field(options: Vec<String>, editing: bool, shown: String, mut draft: Signal<String>) -> Element {
     let current = if editing { draft() } else { shown };
     rsx! {
@@ -412,6 +439,7 @@ fn select_field(options: Vec<String>, editing: bool, shown: String, mut draft: S
     }
 }
 
+/// Lists supported modulation choices, with a blank option for automatic selection.
 fn modulation_options() -> Vec<String> {
     [Modulation::Auto, Modulation::Am, Modulation::Fm, Modulation::Nfm, Modulation::Wfm, Modulation::Fmb]
         .into_iter()
@@ -472,11 +500,12 @@ pub fn MemoryUsage() -> Element {
         return rsx! {};
     };
     let used = db.blocks_used();
-    let percent = used as f64 / MAX_BLOCKS as f64 * 100.0;
+    let max_blocks = active_model().capabilities().max_blocks;
+    let percent = used as f64 / max_blocks as f64 * 100.0;
     rsx! {
         span { id: "memory-usage",
-            "Memory used: {used} / {MAX_BLOCKS} blocks ({percent:.1}%) "
-            meter { min: 0, max: MAX_BLOCKS as f64, value: used as f64 }
+            "Memory used: {used} / {max_blocks} blocks ({percent:.1}%) "
+            meter { min: 0, max: max_blocks as f64, value: used as f64 }
         }
     }
 }
@@ -489,8 +518,10 @@ fn set_all_open(open: bool) {
     ));
 }
 
+/// Main database editor: systems can be expanded into settings, groups, sites, and rows.
 #[component]
 pub fn DatabaseView() -> Element {
+    // This draft controls the type of the next system; it does not alter existing systems.
     let mut new_type = use_signal(|| SystemType::default().to_string());
     let db = SCAN_DATABASE.read();
     let systems = db.as_ref().map(|db| db.systems.clone()).unwrap_or_default();
@@ -525,7 +556,7 @@ pub fn DatabaseView() -> Element {
                 select {
                     value: "{new_type}",
                     onchange: move |e| new_type.set(e.value()),
-                    for t in SYSTEM_TYPES {
+                    for &t in active_model().capabilities().system_types {
                         option { value: "{t}", selected: t.to_string() == new_type(), "{system_type_label(t)}" }
                     }
                 }
@@ -534,9 +565,11 @@ pub fn DatabaseView() -> Element {
     }
 }
 
+/// Shows one expandable system and the matching editor for its system type.
 #[component]
 fn SystemView(si: usize, system: System) -> Element {
     let editing = use_signal(|| false);
+    // Each editor keeps a local draft until the user finishes the edit.
     let mut name = use_signal(String::new);
     let sys_type = format!("{:?}", system.info.sys_type);
     let initial_name = system.info.name.to_string();
@@ -621,6 +654,7 @@ fn SystemView(si: usize, system: System) -> Element {
 /// A system's quick key, startup key, lockout, hold/delay times, AGC and digital waiting settings.
 #[component]
 fn SystemSettingsView(si: usize, info: SystemRecord) -> Element {
+    // Keep editable drafts local so an unfinished edit never changes the database.
     let editing = use_signal(|| false);
     let ed = editing();
     let mut quick_key = use_signal(String::new);
@@ -666,6 +700,7 @@ fn SystemSettingsView(si: usize, info: SystemRecord) -> Element {
                     },
                 }
             }
+            // The settings table keeps each field aligned with its current scanner value.
             table {
                 thead {
                     tr {
@@ -721,12 +756,15 @@ fn SystemSettingsView(si: usize, info: SystemRecord) -> Element {
     }
 }
 
+/// Labels for the two P25 talkgroup scan modes.
 const ID_MODES: [&str; 2] = ["ID Scan", "ID Search"];
+/// Labels for decimal and hexadecimal talkgroup display.
 const ID_FORMATS: [&str; 2] = ["Decimal", "Hex"];
 
 /// P25 system settings: number tag, ID scan/search, delay, priority ID scan, ID format and AGC.
 #[component]
 fn P25SystemSettingsView(si: usize, info: SystemRecord, trunk: TrunkRecord) -> Element {
+    // Keep editable drafts local so an unfinished edit never changes the database.
     let editing = use_signal(|| false);
     let ed = editing();
     let mut number_tag = use_signal(String::new);
@@ -770,6 +808,7 @@ fn P25SystemSettingsView(si: usize, info: SystemRecord, trunk: TrunkRecord) -> E
                     },
                 }
             }
+            // The settings table keeps each field aligned with its current scanner value.
             table {
                 thead {
                     tr {
@@ -814,6 +853,7 @@ fn P25SystemSettingsView(si: usize, info: SystemRecord, trunk: TrunkRecord) -> E
 /// A channel group's quick key, lockout and location (geofence) settings.
 #[component]
 fn GroupSettingsView(si: usize, gi: usize, info: GroupRecord) -> Element {
+    // Keep editable drafts local so an unfinished edit never changes the database.
     let editing = use_signal(|| false);
     let ed = editing();
     let mut quick_key = use_signal(String::new);
@@ -853,6 +893,7 @@ fn GroupSettingsView(si: usize, gi: usize, info: GroupRecord) -> Element {
                     },
                 }
             }
+            // The settings table keeps each field aligned with its current scanner value.
             table {
                 thead {
                     tr {
@@ -891,6 +932,7 @@ fn GroupSettingsView(si: usize, gi: usize, info: GroupRecord) -> Element {
     }
 }
 
+/// Shows a conventional channel group, its settings, and its editable channels.
 #[component]
 fn ChannelGroupView(si: usize, gi: usize, group: ChannelGroup) -> Element {
     let editing = use_signal(|| false);
@@ -927,6 +969,7 @@ fn ChannelGroupView(si: usize, gi: usize, group: ChannelGroup) -> Element {
                 }
             }
             GroupSettingsView { si, gi, info: group.info.clone() }
+            // The settings table keeps each field aligned with its current scanner value.
             table {
                 thead {
                     tr {
@@ -956,8 +999,10 @@ fn ChannelGroupView(si: usize, gi: usize, group: ChannelGroup) -> Element {
     }
 }
 
+/// Shows and edits one channel within a conventional group.
 #[component]
 fn ChannelRow(si: usize, gi: usize, ci: usize, channel: Channel) -> Element {
+    // Keep editable drafts local so an unfinished edit never changes the database.
     let editing = use_signal(|| false);
     let ed = editing();
     let mut name = use_signal(String::new);
@@ -1017,6 +1062,7 @@ fn ChannelRow(si: usize, gi: usize, ci: usize, channel: Channel) -> Element {
     }
 }
 
+/// Shows a trunked site, its band plan, and the frequencies assigned to it.
 #[component]
 fn SiteView(si: usize, sti: usize, site: Site) -> Element {
     let editing = use_signal(|| false);
@@ -1057,6 +1103,7 @@ fn SiteView(si: usize, sti: usize, site: Site) -> Element {
                     }),
                 }
             }
+            // The settings table keeps each field aligned with its current scanner value.
             table {
                 thead {
                     tr {
@@ -1084,8 +1131,10 @@ fn SiteView(si: usize, sti: usize, site: Site) -> Element {
     }
 }
 
+/// Shows and edits one control-channel frequency in a trunked site.
 #[component]
 fn TrunkFreqRow(si: usize, sti: usize, fi: usize, freq: TrunkFreq) -> Element {
+    // Keep editable drafts local so an unfinished edit never changes the database.
     let editing = use_signal(|| false);
     let ed = editing();
     let mut frequency = use_signal(String::new);
@@ -1136,6 +1185,7 @@ fn TrunkFreqRow(si: usize, sti: usize, fi: usize, freq: TrunkFreq) -> Element {
     }
 }
 
+/// Shows a talkgroup group and the talkgroups it contains.
 #[component]
 fn TgidGroupView(si: usize, gi: usize, group: TgidGroup) -> Element {
     let editing = use_signal(|| false);
@@ -1171,6 +1221,7 @@ fn TgidGroupView(si: usize, gi: usize, group: TgidGroup) -> Element {
                     }),
                 }
             }
+            // The settings table keeps each field aligned with its current scanner value.
             table {
                 thead {
                     tr {
@@ -1199,8 +1250,10 @@ fn TgidGroupView(si: usize, gi: usize, group: TgidGroup) -> Element {
     }
 }
 
+/// Shows and edits one talkgroup entry.
 #[component]
 fn TgidRow(si: usize, gi: usize, ti: usize, tgid: TgidEntry) -> Element {
+    // Keep editable drafts local so an unfinished edit never changes the database.
     let editing = use_signal(|| false);
     let ed = editing();
     let mut name = use_signal(String::new);

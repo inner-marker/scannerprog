@@ -8,22 +8,9 @@ icon = [
   "assets/sp-icons/icon.icns",
   "assets/sp-icons/icon.ico",
 ]
-[web.app]
 
-# HTML title tag content
-title = "scannerprog"
 
-# include `assets` in web platform
-[web.resource]
-
-# Additional CSS style files
-style = []
-
-# Additional JavaScript files
-script = []
-
-[web.resource.dev]
-
-# Javascript code file
-# serve: [dev-server] only
-script = []
+# Runtime dependencies; dx uses this list for both the .deb and the .rpm
+[bundle.deb]
+# RPM soname capability: pulls in webkit2gtk4.1 on Fedora
+depends = ["libwebkit2gtk-4.1.so.0()(64bit)"]

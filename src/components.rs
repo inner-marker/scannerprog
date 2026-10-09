@@ -5,13 +5,17 @@ use std::time::Duration;
 use crate::database_view::{DatabaseView, MemoryUsage};
 use crate::confirm::{confirm, confirm_with_details, ConfirmDialog};
 use crate::messages::{push_message, MessageCenter, MessageKind};
+use crate::models::ScannerModel as _;
 use crate::scanner_interaction::{
+    validation_model,
     default_save_dir, default_save_name, detect_scanner, download_database, upload_database, UPLOAD_PROGRESS, load_database_ron, save_database_ron, DownloadStatus, DOWNLOAD_ACTIVE, DOWNLOAD_STATUS, SCANNER_INFO, SCANNER_MEMORY, SCAN_DATABASE, VALIDATION,
     SCANNER_USB_DEVICE,
 };
 
+/// Styles shared by the routed application pages.
 const MAIN_CSS: Asset = asset!("/assets/main.css");
 
+/// Current state of the background serial-port scan.
 #[derive(Clone, Copy, PartialEq)]
 enum ConnectionStatus {
     Connected,
@@ -19,6 +23,7 @@ enum ConnectionStatus {
     Error,
 }
 
+/// Pages available from the navigation bar.
 #[derive(Routable, Clone, PartialEq)]
 pub enum Route {
     #[layout(NavBar)]
@@ -29,16 +34,19 @@ pub enum Route {
 }
 
 
+/// Root UI: watches for scanner connections and mounts the page router.
 #[component]
 pub fn App() -> Element {
     let mut ports_seen = use_signal(String::new);
     let mut connection_status = use_signal(|| ConnectionStatus::Searching);
     use_context_provider(|| connection_status);
 
+    // The connection signal drives the navbar, while scanner details feed the home page.
     // A loop to continuously check for connected scanners and update the UI accordingly.
     use_future(move || async move {
         // do the loop
         loop {
+            // The same serial port is reserved during transfers, so detection waits its turn.
             // The port is busy while downloading.
             if DOWNLOAD_ACTIVE.load(std::sync::atomic::Ordering::SeqCst) {
                 tokio::time::sleep(Duration::from_millis(500)).await;
@@ -94,6 +102,7 @@ pub fn App() -> Element {
     }
 }
 
+/// Shared page layout with navigation, connection status, and app-wide dialogs.
 #[component]
 fn NavBar() -> Element {
     let connection_status = use_context::<Signal<ConnectionStatus>>();
@@ -119,6 +128,7 @@ fn NavBar() -> Element {
     }
 }
 
+/// Shows USB and scanner details, or a note while no supported scanner is found.
 #[component]
 fn Home() -> Element {
     let usb_device = SCANNER_USB_DEVICE.read().clone();
@@ -183,18 +193,21 @@ fn Home() -> Element {
     }
 }
 
-/// global signal for tracking "Upload to Scanner" enablement
-/// 
-/// Defaults to `false`. Only becomes `true` after a successful validation. Any changes to the database will reset it to `false`.
+/// Whether the current database passed validation and may be uploaded.
+///
+/// Defaults to `false`; database edits and new validation attempts clear it.
+/// The toolbar enables upload only after validation succeeds.
 pub static UPLOAD_ENABLED: GlobalSignal<bool> = GlobalSignal::new( || false );
 
 
+/// Actions for downloading, validating, uploading, and managing database files.
 #[component]
 fn Toolbar() -> Element {
 
 
 
     rsx! {
+        // The toolbar groups scanner actions separately from the database editor below.
         div { id: "toolbar",
             button {
                 id: "download-from-scanner",
@@ -213,7 +226,7 @@ fn Toolbar() -> Element {
                 onclick: move |_| {
                     *UPLOAD_ENABLED.write() = false;
                     let errors: Vec<String> = match SCAN_DATABASE.peek().as_ref() {
-                        Some(db) => db.validate().iter().map(|e| e.to_string()).collect(),
+                        Some(db) => validation_model().validate(db).iter().map(|e| e.to_string()).collect(),
                         None => return,
                     };
                     if errors.is_empty() {
@@ -258,9 +271,7 @@ fn Toolbar() -> Element {
                     spawn(async move {
                         let model = SCANNER_INFO
                             .peek()
-                            .as_ref()
-                            .map(|s| s.model.clone())
-                            .unwrap_or_else(|| "Scanner".into());
+                            .as_ref().map_or_else(|| "Scanner".into(), |s| s.model.clone());
                         let mut dialog = rfd::AsyncFileDialog::new()
                             .set_title("Save Database")
                             .add_filter("RON file", &["ron"])
@@ -363,6 +374,7 @@ fn Toolbar() -> Element {
     }
 }
 
+/// Database workspace with the toolbar and current download or validation state.
 #[component]
 fn DatabasePage() -> Element {
     rsx! {

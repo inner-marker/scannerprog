@@ -4,8 +4,10 @@ use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use crate::scanner_db::{self, Error, ScanDatabase, Scanner, ScannerMemory};
+use crate::database::{ScanDatabase, ScannerMemory};
+use crate::models::{self, Error, Scanner, ScannerModel};
 
+/// Serial connection and identity details for a supported scanner.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScannerInfo {
     pub port: String,
@@ -14,7 +16,8 @@ pub struct ScannerInfo {
 }
 
 
-/// USB Device Info
+
+/// USB vendor, product, and descriptive information reported by the operating system.
 #[derive(Debug, Clone, PartialEq)]
 pub struct UsbDeviceInfo {
     pub vendor_id: u16,
@@ -24,12 +27,14 @@ pub struct UsbDeviceInfo {
     pub product: Option<String>,
 }
 
+/// Results from one port scan, including any USB device found.
 pub struct ScannerDetection {
     pub scanner: Option<ScannerInfo>,
     pub usb_device: Option<UsbDeviceInfo>,
 }
 
 // Global signal for the currently connected scanner (UsbDeviceInfo)
+/// USB device seen during port detection, whether supported or not.
 pub static SCANNER_USB_DEVICE: GlobalSignal<Option<UsbDeviceInfo>> = Signal::global( || None );
 
 /// Sends one `\r`-terminated command and returns the response without its `CMD,` prefix.
@@ -57,12 +62,13 @@ pub fn detect_scanner() -> Result<ScannerDetection, serialport::Error> {
 
     // for each port ...
     for p in ports {
+        // USB serial ports can expose scanner identity commands; unrelated port types cannot.
         // Only consider USB ports.
         let serialport::SerialPortType::UsbPort(info) = &p.port_type else {
             continue;
         };
 
-        // make a UsbDeviceInfo instance for this port
+        // Keep USB details even if the device turns out not to be a supported scanner.
         let device = UsbDeviceInfo {
             vendor_id: info.vid,
             product_id: info.pid,
@@ -73,6 +79,7 @@ pub fn detect_scanner() -> Result<ScannerDetection, serialport::Error> {
 
         usb_device = Some(device.clone());
 
+        // Keep this probe short so an unrelated or busy USB serial device does not stall detection.
         // Try to open the serial port with a 500ms timeout.
         let mut port = match serialport::new(&p.port_name, 115_200)
             .timeout(Duration::from_millis(500))
@@ -90,6 +97,10 @@ pub fn detect_scanner() -> Result<ScannerDetection, serialport::Error> {
         let Some(model) = query(&mut port, "MDL") else {
             continue;
         };
+        // A model response is useful only if this app knows how to program that model.
+        if models::find(&model).is_none() {
+            continue; // a Uniden scanner, but not a model we support
+        }
         // println!("Detected scanner model: {}", model);
         // Query the scanner for its firmware information.
         let firmware = query(&mut port, "VER").unwrap_or_else(|| "unknown".into());
@@ -106,6 +117,7 @@ pub fn detect_scanner() -> Result<ScannerDetection, serialport::Error> {
         });
     }
 
+    // Keep USB identity for the home page even when no compatible scanner answered.
     // No compatible scanner was found.
     Ok(ScannerDetection {
         scanner: None,
@@ -114,7 +126,8 @@ pub fn detect_scanner() -> Result<ScannerDetection, serialport::Error> {
 }
 
 
-/// Progress of a download from the scanner.
+
+/// Current state and per-system progress of a database download.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DownloadStatus {
     NotStarted,
@@ -123,28 +136,53 @@ pub enum DownloadStatus {
     Failed(String),
 }
 
+/// State and per-system progress for the current database download.
 pub static DOWNLOAD_STATUS: GlobalSignal<DownloadStatus> = Signal::global(|| DownloadStatus::NotStarted);
 
-/// Result of the last validation: `None` if not validated (or edited since),
-/// `Some(errors)` otherwise. The database may be uploaded only when this is `Some` and empty.
+/// Validation errors for the loaded database; `None` means it needs checking again.
+/// The database may be uploaded only when this is `Some` and empty.
 pub static VALIDATION: GlobalSignal<Option<Vec<String>>> = Signal::global(|| None);
 
-/// The most recently downloaded scan database.
+/// Database currently shown in the editor, if one is loaded.
 pub static SCAN_DATABASE: GlobalSignal<Option<ScanDatabase>> = Signal::global(|| Some(ScanDatabase::new_placeholder()));
 
-/// Memory statistics reported by the scanner (RMB, MEM) at the last download, if it answered.
+/// Memory report returned by the scanner with the most recent successful download.
 pub static SCANNER_MEMORY: GlobalSignal<Option<ScannerMemory>> = Signal::global(|| None);
 
-/// The scanner currently detected on a serial port.
+/// Supported scanner currently detected on a serial port.
 pub static SCANNER_INFO: GlobalSignal<Option<ScannerInfo>> = Signal::global(|| None);
 
-/// Set while a download is running so scanner detection doesn't touch the port.
+/// Guards the serial port so the background detector waits during transfers.
 pub static DOWNLOAD_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// Model of the connected scanner, if one is detected and supported.
+pub fn connected_model() -> Option<&'static dyn ScannerModel> {
+    SCANNER_INFO.read().as_ref().and_then(|info| models::find(&info.model))
+}
+
+/// Model the database is validated against: the connected scanner if any, so one
+/// database can be checked for each scanner it is sent to.
+pub fn validation_model() -> &'static dyn ScannerModel {
+    connected_model().unwrap_or_else(active_model)
+}
+
+/// Model governing the editor: the loaded database's model, else the connected
+/// scanner's, else the default model.
+pub fn active_model() -> &'static dyn ScannerModel {
+    SCAN_DATABASE
+        .read()
+        .as_ref()
+        .and_then(|db| db.model.as_deref())
+        .and_then(models::by_name)
+        .or_else(connected_model)
+        .unwrap_or_else(models::default_model)
+}
 
 /// [`Scanner`] transport over a serial port.
 struct SerialScanner(Box<dyn serialport::SerialPort>);
 
 impl Scanner for SerialScanner {
+    /// Sends one model command and turns the scanner rejection codes into errors.
     fn send(&mut self, cmd: &str) -> Result<String, Error> {
         self.0.write_all(format!("{cmd}\r").as_bytes()).map_err(Error::Io)?;
         let mut buf = Vec::new();
@@ -168,21 +206,19 @@ impl Scanner for SerialScanner {
 
 /// Blocking: reads the whole scan database over `port_name`, reporting `(done, total)` systems.
 fn download_blocking(
+    model: &dyn ScannerModel,
     port_name: &str,
     mut progress: impl FnMut(usize, usize),
 ) -> Result<(ScanDatabase, Option<ScannerMemory>), Error> {
-    let port = serialport::new(port_name, 115_200)
+    let port = serialport::new(port_name, model.baud_rate())
         .timeout(Duration::from_secs(3))
         .open()
         .map_err(|e| Error::Io(e.into()))?;
     let mut scanner = SerialScanner(port);
-    scanner_db::with_program_mode(&mut scanner, |sc| {
-        let db = scanner_db::read_database_with_progress(sc, &mut progress)?;
-        // The cross-check is optional: a failed RMB/MEM must not fail the download.
-        Ok((db, scanner_db::read_scanner_memory(sc).ok()))
-    })
+    model.download(&mut scanner, &mut progress)
 }
 
+/// Records a failed download in both its status signal and the message queue.
 fn fail_download(error: String) {
     push_message(MessageKind::Warning, "download", format!("Download failed: {error}"));
     *DOWNLOAD_STATUS.write() = DownloadStatus::Failed(error);
@@ -195,14 +231,19 @@ pub async fn download_database() {
         fail_download("No scanner detected".into());
         return;
     };
+    let Some(model) = connected_model() else {
+        fail_download("Unsupported scanner model".into());
+        return;
+    };
     if DOWNLOAD_ACTIVE.swap(true, Ordering::SeqCst) {
         return;
     }
     *DOWNLOAD_STATUS.write() = DownloadStatus::InProgress { done: 0, total: 0 };
 
+    // Serial I/O is blocking, so run it off the UI task and send progress back over a channel.
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let task = tokio::task::spawn_blocking(move || {
-        download_blocking(&port_name, |done, total| {
+        download_blocking(model, &port_name, |done, total| {
             let _ = tx.send((done, total));
         })
     });
@@ -236,20 +277,20 @@ pub static UPLOAD_PROGRESS: GlobalSignal<Option<(usize, usize)>> = Signal::globa
 
 /// Blocking: replaces the scanner's systems with `db`, reporting `(done, total)` systems.
 fn upload_blocking(
+    model: &dyn ScannerModel,
     port_name: &str,
     db: &ScanDatabase,
     mut progress: impl FnMut(usize, usize),
 ) -> Result<(), Error> {
-    let port = serialport::new(port_name, 115_200)
+    let port = serialport::new(port_name, model.baud_rate())
         .timeout(Duration::from_secs(10))
         .open()
         .map_err(|e| Error::Io(e.into()))?;
     let mut scanner = SerialScanner(port);
-    scanner_db::with_program_mode(&mut scanner, |sc| {
-        scanner_db::write_database_with_progress(sc, db, &mut progress)
-    })
+    model.upload(&mut scanner, db, &mut progress)
 }
 
+/// Adds a warning for a failed upload without hiding the current database.
 fn fail_upload(error: String) {
     push_message(MessageKind::Warning, "upload", format!("Upload failed: {error}"));
 }
@@ -264,18 +305,30 @@ pub async fn upload_database() {
         fail_upload("No database to upload".into());
         return;
     };
+    let Some(model) = connected_model() else {
+        fail_upload("Unsupported scanner model".into());
+        return;
+    };
+    let errors = model.validate(&db);
+    if !errors.is_empty() {
+        let problems: Vec<String> = errors.iter().map(ToString::to_string).collect();
+        fail_upload(format!("Database cannot be uploaded to a {}: {}", model.name(), problems.join("; ")));
+        return;
+    }
     if DOWNLOAD_ACTIVE.swap(true, Ordering::SeqCst) {
         return;
     }
     *UPLOAD_PROGRESS.write() = Some((0, db.systems.len()));
-    push_message(MessageKind::Note, "upload", "Uploading database to scanner...");
+    push_message(MessageKind::Note, "upload", format!("Uploading database to {}...", model.name()));
 
+    // Serial I/O is blocking, so run it off the UI task and send progress back over a channel.
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let task = tokio::task::spawn_blocking(move || {
-        upload_blocking(&port_name, &db, |done, total| {
+        upload_blocking(model, &port_name, &db, |done, total| {
             let _ = tx.send((done, total));
         })
     });
+    // Only this async side updates the UI signal while the worker handles serial I/O.
     while let Some(p) = rx.recv().await {
         *UPLOAD_PROGRESS.write() = Some(p);
     }

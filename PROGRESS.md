@@ -19,8 +19,8 @@
 Additional Work:
 
 - Validation
-  - [ ] Memory limits: Up to 500 systems, 1,000 total sites (max 256 per system), 20 groups per system, and 25,000 channels (500 max IDs or 1,000 frequencies per system)
-  - [ ] Frequency limits: 25-512 MHz, 758-824 MHz, 849-869 MHz, and 894-960 MHz. 
+  - [~] Memory limits: Up to 500 systems, 1,000 total sites (max 256 per system), 20 groups per system, and 25,000 channels (500 max IDs or 1,000 frequencies per system) (per-model system/site/channel counts, memory, and frequency ranges are validated; per-system limits are not yet)
+  - [~] Frequency limits: 25-512 MHz, 758-824 MHz, 849-869 MHz, and 894-960 MHz. 
 
 ### Scanning
 
