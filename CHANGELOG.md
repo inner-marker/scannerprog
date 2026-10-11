@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased] - Refactoring for Multiple Models
+## [0.1.2] - Refactoring for Multiple Models
 
 This update primarily focuses on refactoring the codebase to support multiple Uniden scanner models.
 
