@@ -424,3 +424,33 @@ button:hover:not(:disabled) {
     gap: 8px;
     margin-top: 14px;
 }
+
+/* Target scanner selector and compatibility warnings on the database page */
+#target-model {
+    margin: 0.5em 0;
+}
+
+.compat-warning {
+    margin: 0.5em 0;
+    padding: 0.6em 0.8em;
+    border: 1px solid #c58b00;
+    border-radius: 4px;
+    background: #fff4d6;
+    color: #4d3800;
+}
+
+.compat-badge {
+    margin-left: 0.6em;
+    padding: 0 0.4em;
+    border-radius: 3px;
+    font-size: 0.85em;
+    color: #4d3800;
+    background: #fff4d6;
+    border: 1px solid #c58b00;
+}
+
+.compat-badge.skipped {
+    color: #6b0000;
+    background: #ffe0e0;
+    border-color: #b00000;
+}

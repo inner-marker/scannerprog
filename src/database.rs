@@ -779,13 +779,94 @@ pub struct LocationAlertRecord {
 /// Everything read from the scanner's scan memory.
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Default)]
 pub struct ScanDatabase {
-    /// Name of the scanner model this database was read from or is meant for.
+    /// 0 for files written before the common database; see [`ScanDatabase::migrate`].
+    #[serde(default)]
+    pub format_version: u32,
+    /// Model a legacy file was read from. Informational only: it no longer limits editing.
     #[serde(default)]
     pub model: Option<String>,
     pub systems: Vec<System>, // in scan order (system list link order)
 }
 
+/// Current on-disk format of [`ScanDatabase`].
+pub const FORMAT_VERSION: u32 = 1;
+
+/// Stable identity of a system, independent of its position or scanner index.
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
+pub struct Uid(pub u64);
+
+impl Uid {
+    /// A new identifier that is unique within this process and, in practice, across files.
+    pub fn new() -> Self {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos() as u64);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // Never 0, which marks an unassigned identifier.
+        Uid((nanos.rotate_left(17) ^ n.wrapping_mul(0x9E37_79B9_7F4A_7C15)) | 1)
+    }
+}
+
+/// Where a system came from.
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Eq, Default)]
+pub enum Source {
+    /// Created or loaded without provenance.
+    #[default]
+    User,
+    /// Downloaded from a scanner of this model.
+    Scanner { model: String },
+}
+
+impl fmt::Display for Source {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::User => f.write_str("User"),
+            Self::Scanner { model } => write!(f, "{model} download"),
+        }
+    }
+}
+
+/// Origin of a system, used to merge later imports into the database.
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Eq, Default)]
+pub struct Provenance {
+    pub source: Source,
+    /// Identifier in the source's own namespace (for example a future RadioReference system id).
+    pub external_id: Option<String>,
+    /// [`System::content_hash`] when the system was imported. `None` for user-made systems.
+    /// A different current hash means the system was edited locally.
+    pub baseline: Option<u64>,
+}
+
 impl ScanDatabase {
+    /// Brings a database loaded from an older file up to [`FORMAT_VERSION`].
+    /// Every system gets an identity, and systems from a scanner file are marked as unmodified imports.
+    pub fn migrate(&mut self) {
+        let legacy = self.format_version < 1;
+        for sys in &mut self.systems {
+            if sys.uid == Uid::default() {
+                sys.uid = Uid::new();
+            }
+            if legacy {
+                if let Some(model) = &self.model {
+                    sys.provenance = Provenance {
+                        source: Source::Scanner { model: model.clone() },
+                        external_id: None,
+                        baseline: Some(sys.content_hash()),
+                    };
+                }
+            }
+        }
+        self.format_version = FORMAT_VERSION;
+    }
+
+    /// True while the database is just the untouched starting placeholder.
+    pub fn is_placeholder(&self) -> bool {
+        let blank = Self::new_placeholder();
+        self.systems.len() == 1 && self.systems[0].content() == blank.systems[0].content()
+    }
+
+    /// (systems, sites, channels incl. talkgroups) as counted in this database.
     /// (systems, sites, channels incl. talkgroups) as counted in this database.
     pub fn counts(&self) -> (usize, usize, usize) {
         // Count channels and talkgroups together because both consume the channel allowance.
@@ -979,8 +1060,11 @@ impl ScanDatabase {
     /// The database is initialized with one system, one group, and one channel, all placeholder entries.
     pub fn new_placeholder() -> Self {
         Self {
+            format_version: FORMAT_VERSION,
             model: None,
             systems: vec![System {
+                uid: Uid::new(),
+                provenance: Provenance::default(),
                 index: Index::default(),
                 info: SystemRecord::default(),
                 kind: SystemKind::Conventional {
@@ -1011,10 +1095,6 @@ pub enum ValidationError {
     InvalidSiteName { system: usize, site: usize, name: String },
     InvalidTalkgroupGroupName { system: usize, group: usize, name: String },
     InvalidTalkgroupName { system: usize, group: usize, talkgroup: usize, name: String },
-    TooMany { what: &'static str, count: usize, max: usize },
-    OutOfMemory { used: usize, max: usize },
-    UnsupportedSystemType { system: usize, sys_type: String, model: &'static str },
-    FrequencyOutOfRange { system: usize, place: String, freq: String, model: &'static str },
 }
 
 impl fmt::Display for ValidationError {
@@ -1043,14 +1123,6 @@ impl fmt::Display for ValidationError {
             Self::InvalidTalkgroupName { system, group, talkgroup, name } => write!(
                 f, "Talkgroup {} in group {} of system {} has invalid name {name:?}",
                 talkgroup + 1, group + 1, system + 1),
-            Self::TooMany { what, count, max } => write!(
-                f, "The database has {count} {what}; the scanner holds at most {max}"),
-            Self::OutOfMemory { used, max } => write!(
-                f, "The database needs {used} memory blocks; the scanner has {max}"),
-            Self::UnsupportedSystemType { system, sys_type, model } => write!(
-                f, "System {} is of type {sys_type}, which the {model} does not support", system + 1),
-            Self::FrequencyOutOfRange { system, place, freq, model } => write!(
-                f, "In system {}, {place} uses {freq}, outside the {model}'s coverage", system + 1),
         }
     }
 }
@@ -1058,9 +1130,92 @@ impl fmt::Display for ValidationError {
 /// A system and everything under it.
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 pub struct System {
+    /// Stable identity; 0 in old files until [`ScanDatabase::migrate`] assigns one.
+    #[serde(default)]
+    pub uid: Uid,
+    #[serde(default)]
+    pub provenance: Provenance,
     pub index: Index, // where it was read from; stale after writes
     pub info: SystemRecord,
     pub kind: SystemKind,
+}
+
+impl System {
+    /// A copy with identity and scanner bookkeeping (indices, links, order) cleared, so two
+    /// copies of the same system read from different scanners or at different times compare equal.
+    pub fn content(&self) -> System {
+        let mut s = self.clone();
+        s.uid = Uid::default();
+        s.provenance = Provenance::default();
+        s.index = Index::default();
+        s.info.links = Links::default();
+        s.info.child_head = None;
+        s.info.child_tail = None;
+        s.info.seq_no = None;
+        let clear_group = |g: &mut GroupRecord| {
+            g.links = Links::default();
+            g.system = None;
+            g.child_head = None;
+            g.child_tail = None;
+            g.seq_no = None;
+        };
+        match &mut s.kind {
+            SystemKind::Conventional { groups } => {
+                for g in groups {
+                    g.index = Index::default();
+                    clear_group(&mut g.info);
+                    for c in &mut g.channels {
+                        c.index = Index::default();
+                        c.info.links = Links::default();
+                        c.info.system = None;
+                        c.info.group = None;
+                    }
+                }
+            }
+            SystemKind::Trunked { trunk, sites, tgid_groups } => {
+                trunk.tgid_group_head = None;
+                trunk.tgid_group_tail = None;
+                trunk.lockout_group_head = None;
+                trunk.lockout_group_tail = None;
+                for site in sites {
+                    site.index = Index::default();
+                    site.info.links = Links::default();
+                    site.info.system = None;
+                    site.info.freq_head = None;
+                    site.info.freq_tail = None;
+                    site.info.seq_no = None;
+                    for f in &mut site.frequencies {
+                        f.index = Index::default();
+                        f.info.links = Links::default();
+                        f.info.system = None;
+                        f.info.site = None;
+                    }
+                }
+                for g in tgid_groups {
+                    g.index = Index::default();
+                    clear_group(&mut g.info);
+                    for t in &mut g.tgids {
+                        t.index = Index::default();
+                        t.info.links = Links::default();
+                        t.info.system = None;
+                        t.info.group = None;
+                    }
+                }
+            }
+        }
+        s
+    }
+
+    /// Hash of [`System::content`] (FNV-1a over its debug text, so it is stable across runs).
+    pub fn content_hash(&self) -> u64 {
+        let text = format!("{:?}", self.content());
+        text.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3))
+    }
+
+    /// True if this system was edited after it was imported (user-made systems always count).
+    pub fn is_locally_modified(&self) -> bool {
+        self.provenance.baseline != Some(self.content_hash())
+    }
 }
 
 /// Conventional and trunked systems have different children.
@@ -1127,4 +1282,72 @@ pub struct TgidGroup {
 pub struct TgidEntry {
     pub index: Index,
     pub info: TgidRecord,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A file written before the common database (no uid, provenance or format version) still loads.
+    const LEGACY: &str = r#"(
+        model: Some("BCD325P2"),
+        systems: [(
+            index: (7),
+            info: (sys_type: Conventional, name: ("Fire"), links: (rev: None, fwd: Some((9))), seq_no: Some(3)),
+            kind: Conventional(groups: []),
+        )],
+    )"#;
+
+    #[test]
+    fn legacy_file_loads_and_is_migrated() {
+        let mut db: ScanDatabase = ron::from_str(LEGACY).unwrap();
+        assert_eq!(db.format_version, 0);
+        db.migrate();
+        assert_eq!(db.format_version, FORMAT_VERSION);
+        let sys = &db.systems[0];
+        assert_ne!(sys.uid, Uid::default());
+        assert_eq!(sys.provenance.source, Source::Scanner { model: "BCD325P2".into() });
+        assert!(!sys.is_locally_modified());
+    }
+
+    #[test]
+    fn editing_marks_a_system_modified_but_bookkeeping_does_not() {
+        let mut db: ScanDatabase = ron::from_str(LEGACY).unwrap();
+        db.migrate();
+        db.systems[0].index = Index(99);
+        db.systems[0].info.seq_no = Some(1);
+        assert!(!db.systems[0].is_locally_modified());
+        db.systems[0].info.hold_time = Some(4);
+        assert!(db.systems[0].is_locally_modified());
+    }
+
+    #[test]
+    fn placeholder_is_detected_until_edited() {
+        let mut db = ScanDatabase::new_placeholder();
+        assert!(db.is_placeholder());
+        db.systems[0].info.hold_time = Some(4);
+        assert!(!db.is_placeholder());
+    }
+
+    #[test]
+    fn migrated_database_round_trips_through_ron() {
+        let mut db: ScanDatabase = ron::from_str(LEGACY).unwrap();
+        db.migrate();
+        let text = ron::ser::to_string_pretty(&db, ron::ser::PrettyConfig::default()).unwrap();
+        assert_eq!(ron::from_str::<ScanDatabase>(&text).unwrap(), db);
+    }
+
+    /// The real download fixture (git-ignored, so only checked where present).
+    #[test]
+    fn real_download_fixture_round_trips() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("working");
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for entry in entries.flatten().filter(|e| e.path().extension().is_some_and(|x| x == "ron")) {
+            let text = std::fs::read_to_string(entry.path()).unwrap();
+            let mut db: ScanDatabase = ron::from_str(&text).unwrap();
+            db.migrate();
+            let again = ron::ser::to_string_pretty(&db, ron::ser::PrettyConfig::default()).unwrap();
+            assert_eq!(ron::from_str::<ScanDatabase>(&again).unwrap(), db);
+        }
+    }
 }

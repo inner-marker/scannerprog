@@ -46,6 +46,7 @@ impl ScannerModel for Bc346xt {
             // The spec lists no coverage; these are the published receive ranges
             // (25-54, 108-174, 216-512, 758-824, 849-869, 894-960, 1240-1300 MHz).
             // TODO: confirm against the BC346XT manual.
+            dmr_fields: false,
             freq_ranges: &[
                 (250_000, 540_000),
                 (1_080_000, 1_740_000),

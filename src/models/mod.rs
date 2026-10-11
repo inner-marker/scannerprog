@@ -4,15 +4,15 @@
 
 use std::fmt;
 
-use crate::database::{
-    Index, ScanDatabase, ScannerMemory, SystemKind, SystemType, ValidationError,
-};
+use crate::database::{Index, ScanDatabase, ScannerMemory, SystemType};
 
 mod bcd325p2;
 mod bc346xt;
+mod compat;
 mod bcd396xt;
 mod uniden;
 
+pub use compat::{CompatReport, Projection};
 pub use uniden::Scanner;
 
 /// Progress callback: `(systems done, systems total)`.
@@ -31,6 +31,8 @@ pub struct Capabilities {
     pub max_channels: usize,
     /// System types the model can store.
     pub system_types: &'static [SystemType],
+    /// True if the model stores DMR settings (TDMA slot, color code).
+    pub dmr_fields: bool,
     /// Inclusive `(low, high)` ranges the scanner can receive.
     pub freq_ranges: &'static [(u32, u32)],
 }
@@ -54,68 +56,9 @@ pub trait ScannerModel: Sync {
     /// Replaces the scanner's contents with `db`.
     fn upload(&self, link: &mut dyn Scanner, db: &ScanDatabase, progress: Progress) -> Result<(), Error>;
 
-    /// Generic database rules plus this model's limits.
-    fn validate(&self, db: &ScanDatabase) -> Vec<ValidationError> {
-        // Start with rules shared by all scanners, then apply this model's limits.
-        let caps = self.capabilities();
-        let mut errors = db.validate();
-
-        // Record counts and block use are separate limits on many scanners.
-        let (systems, sites, channels) = db.counts();
-        for (what, count, max) in [
-            ("systems", systems, caps.max_systems),
-            ("sites", sites, caps.max_sites),
-            ("channels", channels, caps.max_channels),
-        ] {
-            if count > max {
-                errors.push(ValidationError::TooMany { what, count, max });
-            }
-        }
-        let blocks = db.blocks_used();
-        if blocks > caps.max_blocks {
-            errors.push(ValidationError::OutOfMemory { used: blocks, max: caps.max_blocks });
-        }
-
-        for (i, sys) in db.systems.iter().enumerate() {
-            // Capability checks keep unsupported protocols and out-of-band frequencies out of uploads.
-            if !caps.system_types.contains(&sys.info.sys_type) {
-                errors.push(ValidationError::UnsupportedSystemType {
-                    system: i,
-                    sys_type: sys.info.sys_type.to_string(),
-                    model: self.name(),
-                });
-            }
-            // The stored frequency value and the model ranges both use 100 Hz units.
-            let mut check = |freq: Option<crate::database::Freq>, place: String| {
-                if let Some(f) = freq {
-                    if !caps.freq_ranges.iter().any(|&(lo, hi)| (lo..=hi).contains(&f.0)) {
-                        errors.push(ValidationError::FrequencyOutOfRange {
-                            system: i,
-                            place,
-                            freq: f.to_string(),
-                            model: self.name(),
-                        });
-                    }
-                }
-            };
-            match &sys.kind {
-                SystemKind::Conventional { groups } => {
-                    for (g, group) in groups.iter().enumerate() {
-                        for (c, ch) in group.channels.iter().enumerate() {
-                            check(ch.info.freq, format!("channel {} in group {}", c + 1, g + 1));
-                        }
-                    }
-                }
-                SystemKind::Trunked { sites, .. } => {
-                    for (s, site) in sites.iter().enumerate() {
-                        for (f, tf) in site.frequencies.iter().enumerate() {
-                            check(tf.info.freq, format!("frequency {} in site {}", f + 1, s + 1));
-                        }
-                    }
-                }
-            }
-        }
-        errors
+    /// The part of `db` this model can store, and what had to be left out.
+    fn project(&self, db: &ScanDatabase) -> Projection {
+        compat::project(self.name(), &self.capabilities(), db)
     }
 }
 

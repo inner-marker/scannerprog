@@ -4,8 +4,9 @@ use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use crate::database::{ScanDatabase, ScannerMemory};
-use crate::models::{self, Error, Scanner, ScannerModel};
+use crate::database::{ScanDatabase, ScannerMemory, Source};
+use crate::merge::merge_import;
+use crate::models::{self, Error, Projection, Scanner, ScannerModel};
 
 /// Serial connection and identity details for a supported scanner.
 #[derive(Debug, Clone, PartialEq)]
@@ -160,21 +161,14 @@ pub fn connected_model() -> Option<&'static dyn ScannerModel> {
     SCANNER_INFO.read().as_ref().and_then(|info| models::find(&info.model))
 }
 
-/// Model the database is validated against: the connected scanner if any, so one
-/// database can be checked for each scanner it is sent to.
-pub fn validation_model() -> &'static dyn ScannerModel {
-    connected_model().unwrap_or_else(active_model)
-}
+/// Scanner model the user picked while none is connected (by name); `None` means the default.
+pub static CHOSEN_MODEL: GlobalSignal<Option<String>> = Signal::global(|| None);
 
-/// Model governing the editor: the loaded database's model, else the connected
-/// scanner's, else the default model.
-pub fn active_model() -> &'static dyn ScannerModel {
-    SCAN_DATABASE
-        .read()
-        .as_ref()
-        .and_then(|db| db.model.as_deref())
-        .and_then(models::by_name)
-        .or_else(connected_model)
+/// Model the database is checked and uploaded against: the connected scanner if any, else the
+/// user's choice, else the default. It never limits what can be edited, only what is sent.
+pub fn target_model() -> &'static dyn ScannerModel {
+    connected_model()
+        .or_else(|| CHOSEN_MODEL.read().as_deref().and_then(models::by_name))
         .unwrap_or_else(models::default_model)
 }
 
@@ -255,10 +249,19 @@ pub async fn download_database() {
     match task.await {
         Ok(Ok((db, memory))) => {
             *SCANNER_MEMORY.write() = memory;
-            *SCAN_DATABASE.write() = Some(db);
+            // Merge rather than replace, so edits and systems from other sources are kept.
+            let source = Source::Scanner { model: model.name().to_owned() };
+            let report = {
+                let mut library = SCAN_DATABASE.write();
+                merge_import(library.get_or_insert_with(ScanDatabase::default), &source, db.systems)
+            };
             *VALIDATION.write() = None;
             *DOWNLOAD_STATUS.write() = DownloadStatus::Completed;
-            push_message(MessageKind::Note, "download", "Download completed successfully.");
+            push_message(
+                MessageKind::Note,
+                "download",
+                format!("Download completed: {}", report.summary()),
+            );
         }
         Ok(Err(Error::Scanner { cmd, reply })) if cmd == "PRG" => {
             fail_download(format!(
@@ -309,7 +312,9 @@ pub async fn upload_database() {
         fail_upload("Unsupported scanner model".into());
         return;
     };
-    let errors = model.validate(&db);
+    // Only the part the scanner can use is sent, so only that part has to pass validation.
+    let Projection { db, .. } = model.project(&db);
+    let errors = db.validate();
     if !errors.is_empty() {
         let problems: Vec<String> = errors.iter().map(ToString::to_string).collect();
         fail_upload(format!("Database cannot be uploaded to a {}: {}", model.name(), problems.join("; ")));
@@ -375,5 +380,8 @@ pub fn save_database_ron(db: &ScanDatabase, path: &std::path::Path) -> Result<st
 /// Reads a RON database previously written by [`save_database_ron`].
 pub fn load_database_ron(path: &std::path::Path) -> Result<ScanDatabase, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("Could not read {}: {e}", path.display()))?;
-    ron::from_str(&text).map_err(|e| format!("Could not parse {}: {e}", path.display()))
+    let mut db: ScanDatabase =
+        ron::from_str(&text).map_err(|e| format!("Could not parse {}: {e}", path.display()))?;
+    db.migrate();
+    Ok(db)
 }

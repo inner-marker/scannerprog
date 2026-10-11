@@ -45,6 +45,7 @@ impl ScannerModel for Bcd325p2 {
                 SystemType::DmrOneFreq,
             ],
             // 25-512, 758-824, 849-869 and 894-960 MHz
+            dmr_fields: true,
             freq_ranges: &[
                 (250_000, 5_120_000),
                 (7_580_000, 8_240_000),

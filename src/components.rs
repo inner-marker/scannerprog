@@ -7,7 +7,7 @@ use crate::confirm::{confirm, confirm_with_details, ConfirmDialog};
 use crate::messages::{push_message, MessageCenter, MessageKind};
 use crate::models::ScannerModel as _;
 use crate::scanner_interaction::{
-    validation_model,
+    target_model,
     default_save_dir, default_save_name, detect_scanner, download_database, upload_database, UPLOAD_PROGRESS, load_database_ron, save_database_ron, DownloadStatus, DOWNLOAD_ACTIVE, DOWNLOAD_STATUS, SCANNER_INFO, SCANNER_MEMORY, SCAN_DATABASE, VALIDATION,
     SCANNER_USB_DEVICE,
 };
@@ -200,6 +200,26 @@ fn Home() -> Element {
 pub static UPLOAD_ENABLED: GlobalSignal<bool> = GlobalSignal::new( || false );
 
 
+/// Text for the upload confirmation listing what the scanner cannot take; empty if everything fits.
+fn upload_skip_summary(report: crate::models::CompatReport) -> String {
+    if report.is_compatible() {
+        return String::new();
+    }
+    const SHOWN: usize = 12;
+    let mut text = format!(
+        "\n\nNot everything will be uploaded ({} skipped, {} changed). The full database stays here unchanged:",
+        report.skipped(),
+        report.degraded()
+    );
+    for issue in report.issues.iter().take(SHOWN) {
+        text.push_str(&format!("\n- {issue}"));
+    }
+    if report.issues.len() > SHOWN {
+        text.push_str(&format!("\n...and {} more.", report.issues.len() - SHOWN));
+    }
+    text
+}
+
 /// Actions for downloading, validating, uploading, and managing database files.
 #[component]
 fn Toolbar() -> Element {
@@ -226,7 +246,14 @@ fn Toolbar() -> Element {
                 onclick: move |_| {
                     *UPLOAD_ENABLED.write() = false;
                     let errors: Vec<String> = match SCAN_DATABASE.peek().as_ref() {
-                        Some(db) => validation_model().validate(db).iter().map(|e| e.to_string()).collect(),
+                        Some(db) => {
+                            // Items the scanner cannot use are reported but do not block an upload,
+                            // which sends only the compatible part.
+                            for issue in target_model().project(db).report.issues {
+                                push_message(MessageKind::Warning, "compatibility", issue.to_string());
+                            }
+                            db.validate().iter().map(|e| e.to_string()).collect()
+                        }
                         None => return,
                     };
                     if errors.is_empty() {
@@ -249,13 +276,19 @@ fn Toolbar() -> Element {
                     || matches!(*DOWNLOAD_STATUS.read(), DownloadStatus::InProgress { .. }),
                 title: "Upload the database to the scanner (requires a successful validation).",
                 onclick: move |_| {
+                    let skipped = match SCAN_DATABASE.peek().as_ref() {
+                        Some(db) => upload_skip_summary(target_model().project(db).report),
+                        None => String::new(),
+                    };
                     confirm_with_details(
                         "Replace the scanner's contents with this database?",
-                        "Uploading deletes every system currently stored on the scanner (including all of \
-                         their groups, channels, sites and talkgroups) and then writes this database in their place.\n\n\
-                         If the upload fails part-way, the scanner will be left with only the systems written so far.\n\n\
-                         Recommended: click \"Download From Scanner\" and then \"Save to File\" first, so you have a \
-                         backup of what is on the scanner now.",
+                        format!(
+                            "Uploading deletes every system currently stored on the scanner (including all of \
+                             their groups, channels, sites and talkgroups) and then writes this database in their place.\n\n\
+                             If the upload fails part-way, the scanner will be left with only the systems written so far.\n\n\
+                             Recommended: click \"Download From Scanner\" and then \"Save to File\" first, so you have a \
+                             backup of what is on the scanner now.{skipped}"
+                        ),
                         "Upload",
                         || {
                             spawn(upload_database());

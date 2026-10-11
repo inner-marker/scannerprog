@@ -11,6 +11,7 @@ mod models;
 mod scanner_interaction;
 mod components;
 mod messages;
+mod merge;
 mod confirm;
 
 

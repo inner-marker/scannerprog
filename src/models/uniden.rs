@@ -550,10 +550,16 @@ pub fn read_database_with_progress<S: Scanner>(
         } else {
             SystemKind::Conventional { groups: read_channel_groups(sc, info.child_head)? }
         };
-        systems.push(System { index, info, kind });
+        systems.push(System {
+            uid: Uid::new(),
+            provenance: Provenance::default(),
+            index,
+            info,
+            kind,
+        });
         progress(systems.len(), total);
     }
-    Ok(ScanDatabase { model: None, systems })
+    Ok(ScanDatabase { format_version: FORMAT_VERSION, model: None, systems })
 }
 
 /// Conventional system: groups, then channels in each group.
@@ -970,6 +976,14 @@ pub fn download(
     with_program_mode(&mut super::DynLink(link), |sc| {
         let mut db = read_database_with_progress(sc, d, progress)?;
         db.model = Some(model.to_owned());
+        // Mark every system as an unmodified import so later downloads can merge into it.
+        for sys in &mut db.systems {
+            sys.provenance = Provenance {
+                source: Source::Scanner { model: model.to_owned() },
+                external_id: None,
+                baseline: Some(sys.content_hash()),
+            };
+        }
         // The cross-check is optional: a failed RMB/MEM must not fail the download.
         Ok((db, read_scanner_memory(sc).ok()))
     })

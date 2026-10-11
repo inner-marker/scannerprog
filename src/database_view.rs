@@ -8,7 +8,9 @@ use crate::database::{
     BandPlan, Channel, ChannelGroup, Freq, GroupRecord, GroupType, KeyAssignment, Modulation, Name, ScanDatabase, Site, System,
     SystemKind, SystemRecord, SiteRecord, TgidRecord, ChannelRecord, SystemType, TgidEntry, TgidGroup, TrunkFreq, TrunkRecord
 };
-use crate::scanner_interaction::{active_model, SCAN_DATABASE, VALIDATION};
+use crate::messages::{push_message, MessageKind};
+use crate::models::{self, CompatReport};
+use crate::scanner_interaction::{connected_model, target_model, CHOSEN_MODEL, SCAN_DATABASE, VALIDATION};
 
 /// Pencil icon used by the inline edit controls.
 const EDIT_ICON: Asset = asset!("/assets/icons/icons8-edit-pencil-24.svg");
@@ -295,7 +297,13 @@ fn new_system(sys_type: SystemType) -> System {
     } else {
         SystemKind::Conventional { groups: Vec::new() }
     };
-    System { index: Default::default(), info, kind }
+    System {
+        uid: crate::database::Uid::new(),
+        provenance: Default::default(),
+        index: Default::default(),
+        info,
+        kind,
+    }
 }
 
 /// Makes an empty conventional group with a visible placeholder name.
@@ -500,7 +508,7 @@ pub fn MemoryUsage() -> Element {
         return rsx! {};
     };
     let used = db.blocks_used();
-    let max_blocks = active_model().capabilities().max_blocks;
+    let max_blocks = target_model().capabilities().max_blocks;
     let percent = used as f64 / max_blocks as f64 * 100.0;
     rsx! {
         span { id: "memory-usage",
@@ -518,6 +526,54 @@ fn set_all_open(open: bool) {
     ));
 }
 
+/// Chooses which scanner model the database is checked against while no scanner is connected.
+#[component]
+fn TargetModel() -> Element {
+    let connected = connected_model();
+    let current = target_model().name();
+    rsx! {
+        div { id: "target-model",
+            "Target scanner: "
+            if let Some(model) = connected {
+                strong { "{model.name()}" }
+                " (connected)"
+            } else {
+                select {
+                    value: "{current}",
+                    onchange: move |e| *CHOSEN_MODEL.write() = Some(e.value()),
+                    for m in models::all() {
+                        option { value: "{m.name()}", selected: m.name() == current, "{m.name()}" }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Warns when the target scanner cannot use the whole database. The database stays fully editable.
+#[component]
+fn CompatBanner(report: CompatReport) -> Element {
+    if report.is_compatible() {
+        return rsx! {};
+    }
+    let model = target_model().name();
+    let summary = report.summary(model);
+    rsx! {
+        div { id: "compat-banner", class: "compat-warning", role: "alert",
+            strong { "⚠ {summary}" }
+            " Everything remains editable here; only the compatible part is sent to the scanner."
+            details {
+                summary { "Details" }
+                ul {
+                    for issue in report.issues.iter() {
+                        li { "{issue}" }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Main database editor: systems can be expanded into settings, groups, sites, and rows.
 #[component]
 pub fn DatabaseView() -> Element {
@@ -525,8 +581,27 @@ pub fn DatabaseView() -> Element {
     let mut new_type = use_signal(|| SystemType::default().to_string());
     let db = SCAN_DATABASE.read();
     let systems = db.as_ref().map(|db| db.systems.clone()).unwrap_or_default();
+    // Recomputed when the database or the target scanner changes.
+    let report = use_memo(move || {
+        let model = target_model();
+        SCAN_DATABASE.read().as_ref().map(|db| model.project(db).report).unwrap_or_default()
+    });
+    // Warn once per distinct result, not on every edit.
+    let mut last_warned = use_signal(String::new);
+    use_effect(move || {
+        let report = report.read();
+        let text = if report.is_compatible() { String::new() } else { report.summary(target_model().name()) };
+        if *last_warned.peek() != text {
+            if !text.is_empty() {
+                push_message(MessageKind::Warning, "compatibility", text.clone());
+            }
+            last_warned.set(text);
+        }
+    });
     rsx! {
         div { id: "database-view",
+            TargetModel {}
+            CompatBanner { report: report() }
             h2 { "Systems ({systems.len()})" }
             div { class: "expand-controls",
                 button {
@@ -541,7 +616,13 @@ pub fn DatabaseView() -> Element {
                 }
             }
             for (si, system) in systems.into_iter().enumerate() {
-                SystemView { key: "{key_systems(si)}", si, system }
+                SystemView {
+                    key: "{key_systems(si)}",
+                    si,
+                    system,
+                    incompatible: report.read().system_has_skips(si),
+                    notes: report.read().for_system(si).map(ToString::to_string).collect::<Vec<_>>(),
+                }
             }
             div { class: "add-row",
                 AddButton {
@@ -556,7 +637,7 @@ pub fn DatabaseView() -> Element {
                 select {
                     value: "{new_type}",
                     onchange: move |e| new_type.set(e.value()),
-                    for &t in active_model().capabilities().system_types {
+                    for &t in target_model().capabilities().system_types {
                         option { value: "{t}", selected: t.to_string() == new_type(), "{system_type_label(t)}" }
                     }
                 }
@@ -567,11 +648,12 @@ pub fn DatabaseView() -> Element {
 
 /// Shows one expandable system and the matching editor for its system type.
 #[component]
-fn SystemView(si: usize, system: System) -> Element {
+fn SystemView(si: usize, system: System, incompatible: bool, notes: Vec<String>) -> Element {
     let editing = use_signal(|| false);
     // Each editor keeps a local draft until the user finishes the edit.
     let mut name = use_signal(String::new);
     let sys_type = format!("{:?}", system.info.sys_type);
+    let tip = notes.join("\n");
     let initial_name = system.info.name.to_string();
     let settings = match (system.info.sys_type, &system.kind) {
         (SystemType::P25Standard | SystemType::P25OneFreq, SystemKind::Trunked { trunk, .. }) => rsx! {
@@ -584,6 +666,13 @@ fn SystemView(si: usize, system: System) -> Element {
             summary {
                 {name_field(editing(), system.info.name.to_string(), name)}
                 " ({sys_type})"
+                if !notes.is_empty() {
+                    span {
+                        class: if incompatible { "compat-badge skipped" } else { "compat-badge changed" },
+                        title: "{tip}",
+                        if incompatible { "⚠ not usable on target" } else { "⚠ partly usable on target" }
+                    }
+                }
                 EditButton {
                     editing,
                     on_toggle: move |now: bool| {
