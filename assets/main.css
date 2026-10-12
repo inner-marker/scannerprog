@@ -645,6 +645,13 @@ button:hover:not(:disabled) {
 	border-color: #dd5b5b;
 	color: white;
 }
+
+.mute-modes {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.45rem;
+	margin-top: 0.6rem;
+}
 .qk-pending {
     display: flex;
     flex-wrap: wrap;
@@ -715,6 +722,12 @@ span.qk.none { opacity: 0.6; }
 }
 .lcd-line { min-height: 1.2em; white-space: pre; }
 .lcd-line.large { font-size: 1.15em; font-weight: bold; }
+.lcd-cell { display: inline-block; width: 1ch; text-align: center; }
+.lcd-icon { font-weight: bold; }
+.lcd-icon.boxed { outline: 1px solid currentColor; outline-offset: -1px; }
+.lcd-icon.compass { font-size: 0.8em; }
+.lcd-bar { font-weight: bold; }
+.lcd-icon.unknown { opacity: 0.75; }
 .lcd-line .reverse { color: #d5e2b1; background: #16200f; }
 .lcd-line .underline { text-decoration: underline; }
 .remote-keypad {

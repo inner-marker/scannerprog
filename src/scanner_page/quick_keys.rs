@@ -4,10 +4,10 @@ use dioxus::prelude::*;
 
 use super::capability::gate;
 use crate::control::{
-    FILTER_ACTIVE, GROUP_KEYS, HP_QUICK_KEYS, HpQuickKeyLevel, QUICK_KEY_DRAFT, QUICK_KEYS,
-    apply_quick_keys, discard_filter, discard_quick_key_changes, load_group_keys,
-    refresh_hp_quick_keys, refresh_quick_keys, restore_filter, scan_only, toggle_group_key,
-    toggle_hp_quick_key, toggle_system_key,
+    BCT8_BANKS, FILTER_ACTIVE, GROUP_KEYS, HP_QUICK_KEYS, HpQuickKeyLevel, QUICK_KEY_DRAFT,
+    QUICK_KEYS, apply_quick_keys, discard_filter, discard_quick_key_changes, load_group_keys,
+    refresh_hp_quick_keys, refresh_quick_keys, restore_filter, scan_only, toggle_bct8_bank,
+    toggle_group_key, toggle_hp_quick_key, toggle_system_key,
 };
 use crate::models::live::{Capability, Family};
 use crate::scanner_interaction::connected_model;
@@ -36,12 +36,16 @@ fn key_class(digit: u8) -> &'static str {
 /// System quick-key grid, the scanner's systems, and the temporary scan filter.
 #[component]
 pub fn QuickKeys() -> Element {
-    let hp = connected_model()
+    let family = connected_model()
         .and_then(|model| model.control_profile())
-        .is_some_and(|profile| matches!(profile.family, Family::HomePatrol | Family::Sds));
-    if hp {
+        .map(|profile| profile.family);
+    if family == Some(Family::Legacy) {
+        return rsx! { Bct8BanksPanel {} };
+    }
+    if family.is_some_and(|family| matches!(family, Family::HomePatrol | Family::Sds)) {
         return rsx! { HpQuickKeysPanel {} };
     }
+
     let gate = gate(Capability::QuickKeysSystems);
     let enabled = gate.is_enabled();
     let keys = QUICK_KEYS.read().clone();
@@ -180,6 +184,38 @@ pub fn QuickKeys() -> Element {
                                         }
                                     }
                                 }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn Bct8BanksPanel() -> Element {
+    let gate = gate(Capability::QuickKeysBanks);
+    let banks = *BCT8_BANKS.read();
+    rsx! {
+        section { id: "quick-keys", class: "panel",
+            h2 { "Scan banks" }
+            p { class: "control-hint",
+                "The BCT8 has five scan banks instead of system and group quick keys. Changes apply immediately."
+            }
+            div { class: "qk-grid bct8-banks",
+                for index in 0..5usize {
+                    {
+                        let selected = banks.is_some_and(|banks| banks[index]);
+                        let label = char::from(b'A' + index as u8);
+                        rsx! {
+                            button {
+                                class: if selected { "qk on" } else { "qk off" },
+                                disabled: !gate.is_enabled() || banks.is_none(),
+                                onclick: move |_| {
+                                    spawn(toggle_bct8_bank(index));
+                                },
+                                "{label}"
                             }
                         }
                     }

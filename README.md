@@ -10,6 +10,10 @@ Generative AI was used in the development of this project. Do with that informat
 
 - [x] Maintain the Database of Scanning Presets
 - [ ] Control the Scanner Functions Remotely (usually USB)
+  - Capability-driven controls for all currently supported scanner families
+  - Virtual LCD rendering, including documented scanner-specific glyphs
+  - Per-radio activity history with CSV export
+  - Remembered connection identity and baud for faster reconnects
 - [ ] Record Scanned Audio & Metadata
 
 ### Supported Scanners
@@ -30,6 +34,7 @@ Supported Scanner Models:
 - Uniden SDS100 ‼️ (live control; database transfer pending)
 - Uniden SDS150 / SDS150GBT ‼️ (live control; database transfer pending)
 - Uniden SDS200 ‼️ (live control; database transfer pending)
+- Uniden BCT8 ‼️ (live control; database transfer pending)
 
 ‼️ = Untested with a Physical Device
 
@@ -40,7 +45,6 @@ Future Scanner Models (USB interface):
 - Uniden BC780XLT
 - Uniden BC785XLT
 - Uniden BC895XLT
-- Uniden BCT8
 - Uniden HomePatrol-1
 
 Unknown if they can be Inplimented:

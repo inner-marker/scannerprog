@@ -187,13 +187,23 @@ pub fn ActivityLog() -> Element {
                     disabled: empty,
                     onclick: move |_| {
                         let name = format!("activity-{}.csv", chrono::Local::now().format("%Y%m%d-%H%M%S"));
-                        match default_save_dir().map(|d| d.join(name)) {
-                            Some(path) => match std::fs::write(&path, &csv) {
-                                Ok(()) => push_message(MessageKind::Note, "control", format!("Activity saved to {}", path.display())),
-                                Err(e) => push_message(MessageKind::Warning, "control", format!("Could not save the activity log: {e}")),
-                            },
-                            None => push_message(MessageKind::Warning, "control", "No folder to save into".to_string()),
-                        }
+                        let csv = csv.clone();
+                        spawn(async move {
+                            let mut dialog = rfd::AsyncFileDialog::new()
+                                .set_title("Export Activity")
+                                .add_filter("CSV file", &["csv"])
+                                .set_file_name(name);
+                            if let Some(directory) = default_save_dir() {
+                                dialog = dialog.set_directory(directory);
+                            }
+                            let Some(file) = dialog.save_file().await else {
+                                return;
+                            };
+                            match std::fs::write(file.path(), csv) {
+                                Ok(()) => push_message(MessageKind::Note, "control", format!("Activity saved to {}", file.path().display())),
+                                Err(error) => push_message(MessageKind::Warning, "control", format!("Could not save the activity log: {error}")),
+                            }
+                        });
                     },
                     "Export CSV"
                 }
@@ -202,7 +212,7 @@ pub fn ActivityLog() -> Element {
                     onclick: move |_| {
                         clear_activity();
                     },
-                    "Hide all"
+                    "Clear history"
                 }
             }
             if empty {

@@ -1,7 +1,7 @@
 //! The Scanner page. Everything here is driven by the connected model's capabilities: controls the
 //! model can't use stay visible but disabled, with an explanation (plan §7).
 //!
-//! PLAN: Phase 2 supports the B1/B2/C live-control families. Deviations are marked `PLAN:`.
+//! PLAN: Phases 1-4 support the A/B/C/D live-control families. Deviations are marked `PLAN:`.
 //! PLAN: no manual theme override, resizable drawer, tabbed medium layout, auto-reconnect or port
 //! picker (the app auto-detects scanners).
 
@@ -14,7 +14,8 @@ mod tools;
 use dioxus::prelude::*;
 
 use crate::control::{perform, stop_remote_control};
-use crate::models::live::{Action, Capability};
+use crate::models::live::{Action, Capability, Family};
+use crate::scanner_interaction::connected_model;
 use capability::gate;
 use panels::{Audio, ConnectionBar, ModeBar, NowPlaying, StatusStrip, Transport};
 use tools::{ActivityLog, BottomDrawer, JumpToTag, QuickTune, TOGGLE_DRAWER_REQUEST, Typing};
@@ -61,9 +62,32 @@ pub fn ScannerPage() -> Element {
                     }
                     if character.len() == 1 {
                         if let Some(digit) = character.chars().next().and_then(|c| c.to_digit(10)) {
-                            if gate(Capability::QuickKeysSystems).is_enabled() {
-                                let key = quick_keys::page_key(*quick_keys::QUICK_KEY_PAGE.peek(), digit as u8);
-                                crate::control::toggle_system_key(key);
+                            let family = connected_model()
+                                .and_then(|model| model.control_profile())
+                                .map(|profile| profile.family);
+                            if family == Some(Family::Legacy) {
+                                if (1..=5).contains(&digit)
+                                    && gate(Capability::QuickKeysBanks).is_enabled()
+                                {
+                                    spawn(crate::control::toggle_bct8_bank(digit as usize - 1));
+                                }
+                            } else {
+                                let key = quick_keys::page_key(
+                                    *quick_keys::QUICK_KEY_PAGE.peek(),
+                                    digit as u8,
+                                );
+                                if family.is_some_and(|family| {
+                                    matches!(family, Family::HomePatrol | Family::Sds)
+                                }) {
+                                    if gate(Capability::QuickKeysFavorites).is_enabled() {
+                                        spawn(crate::control::toggle_hp_quick_key(
+                                            crate::control::HpQuickKeyLevel::Favorite,
+                                            key,
+                                        ));
+                                    }
+                                } else if gate(Capability::QuickKeysSystems).is_enabled() {
+                                    crate::control::toggle_system_key(key);
+                                }
                             }
                             return;
                         }

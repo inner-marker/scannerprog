@@ -1,8 +1,5 @@
-//! Live-control types shared by every model, plus the wire translation for the "XT / P2"
-//! family (BCD325P2, BCD396XT, BC346XT, BCD996XT, BCD996P2). Nothing here depends on the UI, so it can be unit-tested.
-//!
-//! PLAN: the plan's `Family`/`Driver` split is not needed yet because the app supports one
-//! family; `ControlProfile` + [`commands`] play the driver role and a second family can add its own.
+//! Live-control types and universal-action translation shared by all supported protocol families.
+//! Nothing here depends on the UI, so command mapping and parsers can be unit-tested.
 
 use std::time::{Duration, Instant};
 
@@ -11,6 +8,7 @@ use super::Capabilities;
 /// Remote-command dialect used by the Scanner page.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Family {
+    Legacy,
     EarlyComma,
     Gen1,
     Xt,
@@ -42,6 +40,129 @@ pub struct DisplayStatus {
 pub struct DisplayLine {
     pub text: String,
     pub modes: String,
+}
+
+/// One scanner LCD cell translated from the documented large/small font tables.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LcdGlyph {
+    pub text: String,
+    pub class: &'static str,
+    pub title: Option<String>,
+}
+
+fn label_cell(code: u8, start: u8, label: &str) -> Option<String> {
+    let offset = usize::from(code.checked_sub(start)?);
+    label
+        .chars()
+        .nth(offset)
+        .map(|character| character.to_string())
+}
+
+/// Translate one preserved scanner display byte into a browser-renderable glyph.
+pub fn lcd_glyph(character: char, large: bool) -> LcdGlyph {
+    let value = character as u32;
+    let code = if (0xE000..=0xE0FF).contains(&value) {
+        Some((value - 0xE000) as u8)
+    } else if value <= 0x1F {
+        Some(value as u8)
+    } else {
+        None
+    };
+    let Some(code) = code else {
+        return LcdGlyph {
+            text: character.to_string(),
+            class: "",
+            title: None,
+        };
+    };
+    let (text, class, description) = if (0x18..=0x1F).contains(&code) {
+        const BARS: [&str; 8] = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
+        (
+            BARS[usize::from(code - 0x18)].to_owned(),
+            "lcd-bar",
+            "Vertical level bar",
+        )
+    } else if large {
+        match code {
+            0x80 => ("■".to_owned(), "lcd-icon", "Solid block"),
+            0x81 => ("↑".to_owned(), "lcd-icon", "Up arrow"),
+            0x82 => ("↓".to_owned(), "lcd-icon", "Down arrow"),
+            0xA4 | 0xA5 => ("E".to_owned(), "lcd-icon", "East"),
+            0xA6 | 0xA7 => ("N".to_owned(), "lcd-icon", "North"),
+            0xA8 | 0xA9 => ("W".to_owned(), "lcd-icon", "West"),
+            0xAA | 0xAB => ("S".to_owned(), "lcd-icon", "South"),
+            0xCC => ("°".to_owned(), "", "Degree sign"),
+            0xD4 => ("F".to_owned(), "lcd-icon boxed", "Function"),
+            0xD5..=0xD7 | 0xDC | 0xE3..=0xE8 | 0xEB..=0xFC => {
+                ("▮".to_owned(), "lcd-bar", "Signal level")
+            }
+            0xDD => ("L".to_owned(), "lcd-icon", "Lockout"),
+            0xDE => ("/".to_owned(), "lcd-icon", "Lockout"),
+            0xDF => ("O".to_owned(), "lcd-icon", "Lockout"),
+            0x83
+            | 0x88
+            | 0x8B
+            | 0x8C
+            | 0xA0
+            | 0xA3
+            | 0xB0..=0xB3
+            | 0xBB
+            | 0xCD..=0xCF
+            | 0xFD..=0xFF => (" ".to_owned(), "", "Blank"),
+            _ => (
+                "◆".to_owned(),
+                "lcd-icon compass",
+                "Compass graphic segment",
+            ),
+        }
+    } else {
+        let label = label_cell(code, 0x8D, "HOLD")
+            .or_else(|| label_cell(code, 0x91, "DSKP"))
+            .or_else(|| label_cell(code, 0x95, "L/O"))
+            .or_else(|| label_cell(code, 0x98, "AM "))
+            .or_else(|| label_cell(code, 0x9B, "FM"))
+            .or_else(|| label_cell(code, 0x9D, "NF"))
+            .or_else(|| label_cell(code, 0x9F, "WF"))
+            .or_else(|| label_cell(code, 0xA1, "PR"))
+            .or_else(|| label_cell(code, 0xA3, "ATT"))
+            .or_else(|| label_cell(code, 0xB9, "FM"))
+            .or_else(|| label_cell(code, 0xBB, "MU"))
+            .or_else(|| label_cell(code, 0xC1, "SRCH"))
+            .or_else(|| label_cell(code, 0xC5, "IFX"))
+            .or_else(|| label_cell(code, 0xC8, "SCR"))
+            .or_else(|| label_cell(code, 0xCD, "REP"))
+            .or_else(|| label_cell(code, 0xD0, "MAX "))
+            .or_else(|| label_cell(code, 0xD4, "NAC"));
+        if let Some(label) = label {
+            (label, "lcd-icon", "Scanner status label")
+        } else {
+            match code {
+                0x80 => ("■".to_owned(), "lcd-icon", "Solid block"),
+                0x81 => ("↑".to_owned(), "lcd-icon", "Up arrow"),
+                0x82 => ("↓".to_owned(), "lcd-icon", "Down arrow"),
+                0x83 | 0x84 => ("▰".to_owned(), "lcd-icon", "Battery"),
+                0x85 | 0x86 => ("▣".to_owned(), "lcd-icon", "Keypad lock"),
+                0x87..=0x8A | 0xB5..=0xB8 => ("●".to_owned(), "lcd-icon", "Close Call"),
+                0x8B => ("F".to_owned(), "lcd-icon boxed", "Function"),
+                0x8C => ("P".to_owned(), "lcd-icon boxed", "Priority"),
+                0xA6..=0xAD => ("▮".to_owned(), "lcd-bar", "Signal level"),
+                0xAE..=0xB4 => ("▣".to_owned(), "lcd-icon", "Active channel"),
+                0xBD..=0xC0 => ("◆".to_owned(), "lcd-icon", "Marker"),
+                0xCC => ("°".to_owned(), "", "Degree sign"),
+                0xCB | 0xD7 => (" ".to_owned(), "", "Blank"),
+                _ => (
+                    "◇".to_owned(),
+                    "lcd-icon unknown",
+                    "Undocumented scanner glyph",
+                ),
+            }
+        }
+    };
+    LcdGlyph {
+        text,
+        class,
+        title: Some(format!("{description} (0x{code:02X})")),
+    }
 }
 
 /// One sample emitted by `CSC`.
@@ -138,13 +259,18 @@ impl ControlProfile {
             {
                 Native
             }
-            SignalMeter => Unsupported("This model has no PWR signal-meter command."),
+            SignalMeter => Unsupported("This model cannot report signal strength."),
             Volume if self.volume_range.is_some() => Native,
             Volume => Unsupported("This model has no remote volume command."),
             Squelch if self.squelch_range.is_some() => Native,
             Squelch => Unsupported("This model has no remote squelch command."),
             QuickTune => Native,
-            ModeSwitch | ToneOut if self.family != Family::EarlyComma => Native,
+            ModeSwitch if !matches!(self.family, Family::EarlyComma | Family::Legacy) => Native,
+            ModeSwitch if self.family == Family::Legacy => Emulated,
+            ToneOut if self.family == Family::Legacy => {
+                Unsupported("The BCT8 has no Fire Tone-Out mode.")
+            }
+            ToneOut if self.family != Family::EarlyComma => Native,
             ModeSwitch | ToneOut => {
                 Unsupported("This model has no safe direct command for changing to that mode.")
             }
@@ -158,11 +284,15 @@ impl ControlProfile {
                 Native
             }
             Hold | StepNext | StepPrev | Avoid | ResumeScan => Emulated,
+            Mute if self.family == Family::Legacy => Native,
             Mute if self.family == Family::Sds => Emulated,
             Mute if self.family == Family::HomePatrol => {
                 Unsupported("HomePatrol-family scanners have no remote mute or volume command.")
             }
             Mute => Emulated,
+            QuickKeysSystems | QuickKeysGroups if self.family == Family::Legacy => {
+                Unsupported("The BCT8 uses five scan banks instead of system/group quick keys.")
+            }
             QuickKeysSystems | QuickKeysGroups if self.live_quick_keys => Native,
             QuickKeysSystems | QuickKeysGroups => NeedsProgramMode,
             HoldAtLevel if matches!(self.family, Family::HomePatrol | Family::Sds) => Native,
@@ -175,11 +305,13 @@ impl ControlProfile {
             Discovery => Unsupported("Discovery modes exist only on HomePatrol and SDS scanners."),
             Waterfall if self.waterfall => Native,
             Waterfall => Unsupported("A waterfall is only available on SDS scanners."),
+            Highway if self.family == Family::Legacy => Native,
             Highway => Unsupported("Highway Patrol mode exists only on the BCT8."),
             QuickKeysFavorites if self.live_quick_keys => Native,
             QuickKeysFavorites => {
                 Unsupported("Favorites Lists exist only on HomePatrol and SDS scanners.")
             }
+            QuickKeysBanks if self.family == Family::Legacy => Native,
             QuickKeysBanks => Unsupported("Quick-key banks A–E exist only on the BCT8."),
             PowerOff if self.power_off => Native,
             PowerOff => Unsupported("This model has no remote power-off command."),
@@ -192,6 +324,150 @@ impl ControlProfile {
             Record if self.recording => Native,
             Record => Unsupported("This scanner has no user-record control."),
         }
+    }
+}
+
+const BCT8_KEYS: [KeyDef; 27] = [
+    KeyDef {
+        code: "00",
+        label: "Resume/Hold",
+    },
+    KeyDef {
+        code: "01",
+        label: "HWY/PVT",
+    },
+    KeyDef {
+        code: "02 0",
+        label: "0",
+    },
+    KeyDef {
+        code: "02 1",
+        label: "1",
+    },
+    KeyDef {
+        code: "02 2",
+        label: "2",
+    },
+    KeyDef {
+        code: "02 3",
+        label: "3",
+    },
+    KeyDef {
+        code: "02 4",
+        label: "4",
+    },
+    KeyDef {
+        code: "02 5",
+        label: "5",
+    },
+    KeyDef {
+        code: "02 6",
+        label: "6",
+    },
+    KeyDef {
+        code: "02 7",
+        label: "7",
+    },
+    KeyDef {
+        code: "02 8",
+        label: "8",
+    },
+    KeyDef {
+        code: "02 9",
+        label: "9",
+    },
+    KeyDef {
+        code: "03",
+        label: ".",
+    },
+    KeyDef {
+        code: "04",
+        label: "E",
+    },
+    KeyDef {
+        code: "05",
+        label: "PRI",
+    },
+    KeyDef {
+        code: "06",
+        label: "L/O",
+    },
+    KeyDef {
+        code: "07",
+        label: "Up",
+    },
+    KeyDef {
+        code: "08",
+        label: "Down",
+    },
+    KeyDef {
+        code: "09",
+        label: "Search",
+    },
+    KeyDef {
+        code: "10",
+        label: "Service",
+    },
+    KeyDef {
+        code: "11",
+        label: "Data",
+    },
+    KeyDef {
+        code: "12",
+        label: "Delay",
+    },
+    KeyDef {
+        code: "13",
+        label: "Trunk",
+    },
+    KeyDef {
+        code: "14",
+        label: "State",
+    },
+    KeyDef {
+        code: "15",
+        label: "Mute",
+    },
+    KeyDef {
+        code: "16",
+        label: "Flash",
+    },
+    KeyDef {
+        code: "17",
+        label: "Alert",
+    },
+];
+
+const BCT8_SERVICES: [(&str, &str); 9] = [
+    ("Police", "1"),
+    ("Weather", "2"),
+    ("Fire/EMS", "3"),
+    ("News", "4"),
+    ("CB", "5"),
+    ("Air", "6"),
+    ("Railroad", "7"),
+    ("Marine", "8"),
+    ("Department of Transportation", "9"),
+];
+
+/// BCT8 legacy live-control profile.
+pub fn bct8_profile(model: &'static str, caps: &Capabilities) -> ControlProfile {
+    ControlProfile {
+        model,
+        volume_range: None,
+        squelch_range: None,
+        freq_ranges: caps.freq_ranges,
+        service_banks: &BCT8_SERVICES,
+        power_off: false,
+        family: Family::Legacy,
+        keymap: &BCT8_KEYS,
+        battery_status: false,
+        spectrum: false,
+        gps_status: false,
+        pwr_status: false,
+        live_quick_keys: false,
+        waterfall: false,
+        recording: false,
     }
 }
 
@@ -859,6 +1135,7 @@ pub fn noaa_label(mhz: f64) -> Option<&'static str> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ScanMode {
     Scan,
+    Highway,
     /// Service search bank (the `JPM` index).
     Service(&'static str),
     Custom,
@@ -912,6 +1189,8 @@ pub struct LiveState {
     pub squelch: Option<u8>,
     /// App-tracked: mute is emulated with volume 0.
     pub muted: bool,
+    /// BCT8 automatic mute control is selected; `muted` still reflects current audio state.
+    pub mute_automatic: bool,
     pub recording: bool,
 }
 
@@ -1021,6 +1300,7 @@ pub enum Action {
     SetSquelch(u8),
     /// Handled by the session (it needs the volume to restore); never reaches [`commands`].
     SetMute(bool),
+    SetMuteAutomatic,
     JumpMode(ScanMode),
     QuickTune {
         freq_hz: u64,
@@ -1049,6 +1329,7 @@ impl Action {
             Action::SetVolume(_) => "Volume",
             Action::SetSquelch(_) => "Squelch",
             Action::SetMute(_) => "Mute",
+            Action::SetMuteAutomatic => "Automatic mute",
             Action::JumpMode(_) => "Mode change",
             Action::QuickTune { .. } => "Quick tune",
             Action::JumpToTag { .. } => "Jump to tag",
@@ -1108,6 +1389,8 @@ pub fn commands(
     // SPEC: KEY,<code>,<mode>; H hold, S scan, L lockout, < and > step (VFO left/right).
     let key = |c: char| vec![format!("KEY,{c},P")];
     let hp = matches!(profile.family, Family::HomePatrol | Family::Sds);
+    let legacy = profile.family == Family::Legacy;
+    let legacy_key = |code: &str| vec![format!("KEY{code}")];
     let target_command = |command: &str, level: HoldLevel, suffix: &str| {
         let (target, first, second) = hp_target(state, level)?;
         Ok::<_, String>(vec![format!(
@@ -1150,10 +1433,12 @@ pub fn commands(
         )])
     };
     Ok(match action {
+        Action::Hold if legacy => legacy_key("00"),
         Action::Hold if hp => target_command("HLD", HoldLevel::Channel, "")?,
         Action::HoldLevel(level) if hp => target_command("HLD", *level, "")?,
         Action::HoldLevel(_) => return Err("Hold levels are not supported by this model.".into()),
         Action::Hold => key('H'),
+        Action::ResumeScan | Action::JumpMode(ScanMode::Scan) if legacy => legacy_key("00"),
         Action::ResumeScan | Action::JumpMode(ScanMode::Scan) if hp => {
             vec!["JPM,SCN_MODE,FFFFFFFF".into()]
         }
@@ -1163,9 +1448,12 @@ pub fn commands(
         Action::AvoidPermanent => {
             return Err("Permanent avoid is not supported by this model.".into());
         }
+        Action::Avoid if legacy => legacy_key("06"),
         Action::Avoid => key('L'),
         Action::StepNext if hp => target_command("NXT", HoldLevel::Channel, ",1")?,
         Action::StepPrev if hp => target_command("PRV", HoldLevel::Channel, ",1")?,
+        Action::StepNext if legacy => legacy_key("07"),
+        Action::StepPrev if legacy => legacy_key("08"),
         Action::StepNext => key('>'),
         Action::StepPrev => key('<'),
         Action::SetVolume(v) => {
@@ -1181,6 +1469,17 @@ pub fn commands(
             vec![format!("SQL,{}", (*v).clamp(lo, hi))]
         }
         Action::SetMute(_) => return Err("Mute is handled by the session.".into()),
+        Action::SetMuteAutomatic if legacy => vec!["MUA".into()],
+        Action::SetMuteAutomatic => {
+            return Err("Automatic mute control is only available on the BCT8.".into());
+        }
+        Action::JumpMode(ScanMode::Highway) if legacy => vec!["HWN".into()],
+        Action::JumpMode(ScanMode::Service(bank)) if legacy => vec![format!("SV{bank}")],
+        Action::JumpMode(ScanMode::Weather(_)) if legacy => vec!["SV2".into()],
+        Action::JumpMode(ScanMode::Custom) if legacy => legacy_key("09"),
+        Action::JumpMode(_) if legacy => {
+            return Err("The BCT8 cannot jump directly to this mode.".into());
+        }
         Action::JumpMode(_) if profile.family == Family::EarlyComma => {
             return Err("This model's mode changes require physical-key sequences that are not safely automatable.".into());
         }
@@ -1194,6 +1493,9 @@ pub fn commands(
         Action::JumpMode(ScanMode::ToneOut) => vec!["JPM,FTO_MODE,RESERVE".into()],
         Action::JumpMode(ScanMode::QuickSearch) => {
             return Err("Use Quick Tune to enter Quick Search.".into());
+        }
+        Action::JumpMode(ScanMode::Highway) => {
+            return Err("Highway Patrol mode is only available on the BCT8.".into());
         }
         Action::QuickTune {
             freq_hz,
@@ -1213,6 +1515,9 @@ pub fn commands(
             }
             if hp {
                 return Ok(vec![format!("QSH,{wire:08}")]);
+            }
+            if legacy {
+                return Ok(vec![format!("RF{wire:08}?")]);
             }
             // SPEC: XT/P2 QSH includes reserved/modulation fields.
             let modulation = modulation.as_deref().filter(|m| *m != "AUTO").unwrap_or("");
@@ -1267,7 +1572,7 @@ pub fn commands(
 }
 
 /// One reception in the app-side activity log.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ActivityEntry {
     /// Wall-clock time the reception started, e.g. `14:02:11`.
     pub clock: String,
@@ -1279,6 +1584,7 @@ pub struct ActivityEntry {
     /// `None` while the reception is still going.
     pub duration: Option<Duration>,
     pub peak_bars: u8,
+    #[serde(skip, default = "Instant::now")]
     started: Instant,
 }
 
@@ -1293,10 +1599,11 @@ impl ActivityEntry {
 }
 
 /// The most recent receptions, newest last.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ActivityLog {
     pub entries: Vec<ActivityEntry>,
     /// True while the last entry is still open.
+    #[serde(skip)]
     pub(crate) open: bool,
 }
 
@@ -1304,6 +1611,18 @@ pub struct ActivityLog {
 const ACTIVITY_LIMIT: usize = 500;
 
 impl ActivityLog {
+    /// A serializable snapshot with any current reception closed at `now`.
+    pub fn persistence_snapshot(&self, now: Instant) -> Self {
+        let mut snapshot = self.clone();
+        if snapshot.open {
+            if let Some(last) = snapshot.entries.last_mut() {
+                last.duration = Some(now.saturating_duration_since(last.started));
+            }
+            snapshot.open = false;
+        }
+        snapshot
+    }
+
     /// Feeds one status update in; returns true if the log changed.
     /// A reception starts when squelch opens and ends when it closes or the channel changes.
     pub fn observe(&mut self, s: &LiveState, now: Instant, clock: &str) -> bool {
@@ -1533,6 +1852,30 @@ mod tests {
         );
     }
 
+    #[test]
+    fn translates_bct8_legacy_actions() {
+        let profile = models::find("BCT8").unwrap().control_profile().unwrap();
+        let state = LiveState::default();
+        let one = |action| commands(&action, &profile, &state).unwrap();
+        assert_eq!(one(Action::Hold), ["KEY00"]);
+        assert_eq!(one(Action::StepNext), ["KEY07"]);
+        assert_eq!(one(Action::Avoid), ["KEY06"]);
+        assert_eq!(one(Action::JumpMode(ScanMode::Service("5"))), ["SV5"]);
+        assert_eq!(one(Action::JumpMode(ScanMode::Weather("NORMAL"))), ["SV2"]);
+        assert_eq!(one(Action::JumpMode(ScanMode::Highway)), ["HWN"]);
+        assert_eq!(one(Action::SetMuteAutomatic), ["MUA"]);
+        assert_eq!(
+            one(Action::QuickTune {
+                freq_hz: 406_012_500,
+                modulation: None,
+            }),
+            ["RF04060125?"]
+        );
+        assert!(commands(&Action::JumpMode(ScanMode::CloseCall), &profile, &state).is_err());
+        assert_eq!(profile.support(Capability::Mute), Support::Native);
+        assert_eq!(profile.support(Capability::QuickKeysBanks), Support::Native);
+    }
+
     /// Bad input is refused with a reason instead of being sent.
     #[test]
     fn refuses_bad_input() {
@@ -1688,5 +2031,38 @@ mod tests {
         log.observe(&s, t0 + Duration::from_secs(5), "10:00:05");
         assert_eq!(log.entries[1].duration, Some(Duration::from_secs(2)));
         assert!(log.to_csv().lines().count() == 3);
+    }
+
+    #[test]
+    fn renders_documented_lcd_glyphs() {
+        assert_eq!(lcd_glyph('A', true).text, "A");
+        assert_eq!(lcd_glyph('\u{e018}', true).text, "▁");
+        assert_eq!(lcd_glyph('\u{e081}', true).text, "↑");
+        assert_eq!(lcd_glyph('\u{e0cc}', true).text, "°");
+        assert_eq!(lcd_glyph('\u{e08d}', false).text, "H");
+        assert_eq!(lcd_glyph('\u{e090}', false).text, "D");
+        let unknown = lcd_glyph('\u{e0fe}', false);
+        assert_eq!(unknown.class, "lcd-icon unknown");
+        assert!(
+            unknown
+                .title
+                .as_deref()
+                .is_some_and(|title| title.contains("FE"))
+        );
+    }
+
+    #[test]
+    fn persistence_snapshot_closes_open_reception() {
+        let started = Instant::now();
+        let mut log = ActivityLog::default();
+        let state = LiveState {
+            squelch_open: true,
+            channel: Some("Dispatch".into()),
+            ..Default::default()
+        };
+        log.observe(&state, started, "10:00:00");
+        let snapshot = log.persistence_snapshot(started + Duration::from_secs(4));
+        assert!(!snapshot.open);
+        assert_eq!(snapshot.entries[0].duration, Some(Duration::from_secs(4)));
     }
 }

@@ -43,6 +43,7 @@ pub enum Route {
 pub fn App() -> Element {
     let mut ports_seen = use_signal(String::new);
     let mut connection_status = use_signal(|| ConnectionStatus::Searching);
+    let mut last_detection_warning = use_signal(String::new);
     use_context_provider(|| connection_status);
 
     // The connection signal drives the navbar, while scanner details feed the home page.
@@ -86,6 +87,11 @@ pub fn App() -> Element {
                 .unwrap_or_else(|e| e.to_string());
             ports_seen.set(listing);
             if let Some(detection) = detection {
+                let warning = detection.warnings.join("\n");
+                if !warning.is_empty() && warning != last_detection_warning() {
+                    push_message(MessageKind::Warning, "connection", warning.clone());
+                }
+                last_detection_warning.set(warning);
                 if *SCANNER_INFO.peek() != detection.scanner {
                     *SCANNER_INFO.write() = detection.scanner;
                 }

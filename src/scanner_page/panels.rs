@@ -46,7 +46,7 @@ pub fn ConnectionBar() -> Element {
     };
     let identity = info.map_or_else(
         || "No scanner detected".to_owned(),
-        |i| format!("{} on {}", i.model, i.port),
+        |i| format!("{} on {} at {} baud", i.model, i.port, i.baud),
     );
 
     rsx! {
@@ -102,6 +102,9 @@ pub fn ModeBar() -> Element {
     let hp = connected_model()
         .and_then(|model| model.control_profile())
         .is_some_and(|profile| matches!(profile.family, Family::HomePatrol | Family::Sds));
+    let legacy = connected_model()
+        .and_then(|model| model.control_profile())
+        .is_some_and(|profile| profile.family == Family::Legacy);
     let current = |m: fn(&ScanMode) -> bool| mode.as_ref().is_some_and(m);
 
     rsx! {
@@ -128,6 +131,7 @@ pub fn ModeBar() -> Element {
             CapButton {
                 cap: Capability::ModeSwitch,
                 class: if current(|m| matches!(m, ScanMode::CloseCall)) { "active" } else { "" },
+                blocked: legacy.then(|| "The BCT8 has no Close Call mode.".to_owned()),
                 onclick: move |()| run(Action::JumpMode(ScanMode::CloseCall)),
                 "Close Call"
             }
@@ -160,7 +164,12 @@ pub fn ModeBar() -> Element {
                 onclick: move |()| *OPEN_SPECTRUM_REQUEST.write() += 1,
                 "Waterfall"
             }
-            CapButton { cap: Capability::Highway, onclick: move |()| {}, "Highway" }
+            CapButton {
+                cap: Capability::Highway,
+                class: if current(|m| matches!(m, ScanMode::Highway)) { "active" } else { "" },
+                onclick: move |()| run(Action::JumpMode(ScanMode::Highway)),
+                "Highway"
+            }
         }
         match open() {
             Some(Popover::Service) => rsx! {
@@ -320,6 +329,9 @@ pub fn Audio() -> Element {
         .as_ref()
         .and_then(|p| p.squelch_range)
         .unwrap_or((0, 15));
+    let legacy = profile
+        .as_ref()
+        .is_some_and(|profile| profile.family == Family::Legacy);
 
     rsx! {
         section { id: "audio", class: "panel",
@@ -340,12 +352,35 @@ pub fn Audio() -> Element {
                 value: live.squelch.unwrap_or(0),
                 onchange: move |v| run(Action::SetSquelch(v)),
             }
-            CapButton {
-                cap: Capability::Mute,
-                class: if live.muted { "active" } else { "" },
-                title: "Mute (M). Mutes by setting the volume to 0.",
-                onclick: move |()| run(Action::SetMute(!LIVE.peek().muted)),
-                if live.muted { "Unmute" } else { "Mute" }
+            if legacy {
+                div { class: "mute-modes",
+                    CapButton {
+                        cap: Capability::Mute,
+                        class: if live.muted && !live.mute_automatic { "active" } else { "" },
+                        onclick: move |()| run(Action::SetMute(true)),
+                        "Mute on"
+                    }
+                    CapButton {
+                        cap: Capability::Mute,
+                        class: if !live.muted && !live.mute_automatic { "active" } else { "" },
+                        onclick: move |()| run(Action::SetMute(false)),
+                        "Mute off"
+                    }
+                    CapButton {
+                        cap: Capability::Mute,
+                        class: if live.mute_automatic { "active" } else { "" },
+                        onclick: move |()| run(Action::SetMuteAutomatic),
+                        "Automatic"
+                    }
+                }
+            } else {
+                CapButton {
+                    cap: Capability::Mute,
+                    class: if live.muted { "active" } else { "" },
+                    title: "Mute (M). Mutes by setting the volume to 0.",
+                    onclick: move |()| run(Action::SetMute(!LIVE.peek().muted)),
+                    if live.muted { "Unmute" } else { "Mute" }
+                }
             }
             CapButton {
                 cap: Capability::Record,

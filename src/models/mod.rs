@@ -11,6 +11,8 @@ mod bcd325p2;
 mod bcd396xt;
 mod bcd996p2;
 mod bcd996xt;
+mod bct8;
+pub mod bct8_live;
 mod compat;
 mod homepatrol;
 pub mod homepatrol_live;
@@ -21,7 +23,8 @@ mod uniden;
 pub use compat::{CompatReport, Projection};
 pub use uniden::{
     GroupSummary, Scanner, SystemSummary, qgl_position, qsl_position, read_group_summaries,
-    read_qgl, read_qsl, read_system_summaries, with_program_mode, write_qgl, write_qsl,
+    read_qgl, read_qsl, read_system_lockouts, read_system_summaries, with_program_mode, write_qgl,
+    write_qsl, write_system_lockouts,
 };
 
 /// Progress callback: `(systems done, systems total)`.
@@ -81,7 +84,7 @@ pub trait ScannerModel: Sync {
 }
 
 /// The supported scanners, in the order used for the default model.
-static MODELS: [&dyn ScannerModel; 14] = [
+static MODELS: [&dyn ScannerModel; 15] = [
     &bcd325p2::Bcd325p2,
     &bcd396xt::Bcd396xt,
     &bc346xt::Bc346xt,
@@ -96,6 +99,7 @@ static MODELS: [&dyn ScannerModel; 14] = [
     &homepatrol::Sds100,
     &homepatrol::Sds150,
     &homepatrol::Sds200,
+    &bct8::Bct8,
 ];
 
 /// All supported models.
@@ -127,6 +131,15 @@ impl Scanner for DynLink<'_> {
     /// Forward each command to the wrapped scanner connection.
     fn send(&mut self, cmd: &str) -> Result<String, Error> {
         self.0.send(cmd)
+    }
+
+    fn send_routed(
+        &mut self,
+        cmd: &str,
+        is_unsolicited: &dyn Fn(&str) -> bool,
+        on_unsolicited: &mut dyn FnMut(String),
+    ) -> Result<String, Error> {
+        self.0.send_routed(cmd, is_unsolicited, on_unsolicited)
     }
 
     fn send_xml(&mut self, cmd: &str, closing_tag: &str) -> Result<String, Error> {

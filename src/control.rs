@@ -11,6 +11,12 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 use crate::messages::{MessageKind, push_message};
+use crate::models::bct8_live::{
+    apply_channel as apply_bct8_channel, apply_unsolicited as apply_bct8_unsolicited,
+    is_unsolicited as is_bct8_unsolicited, parse_banks as parse_bct8_banks,
+    parse_lcd as parse_bct8_lcd, parse_lcd_frequency as parse_bct8_lcd_frequency,
+    parse_mode as parse_bct8_mode,
+};
 use crate::models::homepatrol_live::{
     ChargeStatus, WaterfallStatus, parse_charge_status, parse_gst, parse_scanner_info,
     parse_waterfall,
@@ -90,6 +96,50 @@ pub static GPS_FIX: GlobalSignal<Option<bool>> = Signal::global(|| None);
 /// Detailed charge information reported by SDS scanners.
 pub static CHARGE_STATUS: GlobalSignal<Option<ChargeStatus>> = Signal::global(|| None);
 
+/// Selected BCT8 scan banks A-E.
+pub static BCT8_BANKS: GlobalSignal<Option<[bool; 5]>> = Signal::global(|| None);
+
+/// Toggles one BCT8 scan bank immediately. At least one bank must remain selected.
+pub async fn toggle_bct8_bank(index: usize) {
+    let Some(mut banks) = *BCT8_BANKS.peek() else {
+        return;
+    };
+    if index >= banks.len() {
+        return;
+    }
+    if banks[index] && banks.iter().filter(|selected| **selected).count() == 1 {
+        push_message(
+            MessageKind::Warning,
+            "control",
+            "At least one BCT8 scan bank must remain enabled.".to_owned(),
+        );
+        return;
+    }
+    banks[index] = !banks[index];
+    let selected = banks
+        .iter()
+        .enumerate()
+        .filter_map(|(index, selected)| {
+            selected.then_some(char::from(b'A' + u8::try_from(index).unwrap_or(0)))
+        })
+        .collect::<String>();
+    match send_command(format!("SB {selected}")).await {
+        Ok(reply) => match parse_bct8_banks(&reply) {
+            Ok(banks) => *BCT8_BANKS.write() = Some(banks),
+            Err(error) => push_message(
+                MessageKind::Warning,
+                "control",
+                format!("Changing BCT8 scan banks returned an invalid reply: {error}"),
+            ),
+        },
+        Err(error) => push_message(
+            MessageKind::Warning,
+            "control",
+            format!("Changing BCT8 scan banks failed: {error}"),
+        ),
+    }
+}
+
 /// Recent samples from the active `CSC` sweep.
 pub static SPECTRUM: GlobalSignal<VecDeque<SpectrumPoint>> = Signal::global(VecDeque::new);
 pub static SPECTRUM_ACTIVE: GlobalSignal<bool> = Signal::global(|| false);
@@ -115,11 +165,77 @@ static ACTIVITY_STORE: Mutex<ActivityLog> = Mutex::new(ActivityLog {
     entries: Vec::new(),
     open: false,
 });
+static ACTIVITY_RADIO: Mutex<Option<String>> = Mutex::new(None);
+
+fn activity_path(radio_id: &str) -> Result<std::path::PathBuf, String> {
+    let root = dirs::data_local_dir()
+        .ok_or("No local application-data folder is available for activity history.")?;
+    let file_name = radio_id
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    Ok(root
+        .join("Scanner Programmer")
+        .join("activity")
+        .join(format!("{file_name}.ron")))
+}
+
+fn load_activity(radio_id: &str) -> Result<ActivityLog, String> {
+    let path = activity_path(radio_id)?;
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(ActivityLog::default());
+        }
+        Err(error) => return Err(format!("Could not read {}: {error}", path.display())),
+    };
+    ron::from_str(&text).map_err(|error| format!("Could not parse {}: {error}", path.display()))
+}
+
+fn persist_activity(log: &ActivityLog) -> Result<(), String> {
+    let radio_id = ACTIVITY_RADIO
+        .lock()
+        .expect("activity radio")
+        .clone()
+        .ok_or("No radio is selected for activity history.")?;
+    let path = activity_path(&radio_id)?;
+    let parent = path
+        .parent()
+        .ok_or("The activity-history path has no parent folder.")?;
+    std::fs::create_dir_all(parent)
+        .map_err(|error| format!("Could not create {}: {error}", parent.display()))?;
+    let snapshot = log.persistence_snapshot(Instant::now());
+    let text = ron::ser::to_string_pretty(&snapshot, ron::ser::PrettyConfig::default())
+        .map_err(|error| format!("Could not serialize activity history: {error}"))?;
+    std::fs::write(&path, text)
+        .map_err(|error| format!("Could not save {}: {error}", path.display()))
+}
+
+fn publish_activity(log: &ActivityLog) {
+    *ACTIVITY.write() = log.clone();
+    if let Err(error) = persist_activity(log) {
+        push_message(MessageKind::Warning, "control", error);
+    }
+}
+
+fn persist_current_activity() {
+    let store = ACTIVITY_STORE.lock().expect("activity");
+    if let Err(error) = persist_activity(&store) {
+        push_message(MessageKind::Warning, "control", error);
+    }
+}
 
 /// Empties the activity log.
 pub fn clear_activity() {
-    *ACTIVITY_STORE.lock().expect("activity") = ActivityLog::default();
-    *ACTIVITY.write() = ActivityLog::default();
+    let mut store = ACTIVITY_STORE.lock().expect("activity");
+    *store = ActivityLog::default();
+    publish_activity(&store);
 }
 
 /// The volume to return to when un-muting; mute is emulated by setting volume 0.
@@ -173,6 +289,17 @@ enum Event {
         latency: Duration,
     },
     Charge(String),
+    LegacyPoll {
+        mode: Option<String>,
+        squelch: Option<String>,
+        channel: Option<String>,
+        lcd: Option<(String, String, String)>,
+        banks: Option<String>,
+        mute_control: Option<String>,
+        mute: Option<String>,
+        latency: Duration,
+    },
+    LegacyUnsolicited(String),
     WaterfallStatus(String),
     WaterfallFrame(String),
     /// A volume or squelch reading.
@@ -362,9 +489,13 @@ pub async fn press_key(code: &'static str, mode: &'static str) {
         if !matches!(mode, "P" | "L" | "H" | "R") {
             return Err("Invalid keypad gesture".to_owned());
         }
-        send_command(format!("KEY,{code},{mode}"))
-            .await
-            .map_err(|e| e.to_string())?;
+        let command = if profile.family == Family::Legacy {
+            let suffix = (mode == "L").then_some("H").unwrap_or("");
+            format!("KEY{code}{suffix}")
+        } else {
+            format!("KEY,{code},{mode}")
+        };
+        send_command(command).await.map_err(|e| e.to_string())?;
         Ok(())
     }
     .await;
@@ -422,6 +553,7 @@ async fn try_perform(action: &Action) -> Result<(), String> {
             live.muted = false;
         }
         Action::SetSquelch(v) => live.squelch = Some(*v),
+        Action::SetMuteAutomatic => live.mute_automatic = true,
         Action::SetRecord(recording) => live.recording = *recording,
         _ => {}
     }
@@ -430,6 +562,18 @@ async fn try_perform(action: &Action) -> Result<(), String> {
 
 /// Mutes by setting volume 0, remembering the old volume; un-mutes by restoring it.
 async fn set_mute(mute: bool) -> Result<(), String> {
+    let family = connected_model()
+        .and_then(|model| model.control_profile())
+        .map(|profile| profile.family)
+        .ok_or("Remote control is not supported on this model")?;
+    if family == Family::Legacy {
+        send_command(if mute { "MUN" } else { "MUF" })
+            .await
+            .map_err(|error| error.to_string())?;
+        LIVE.write().muted = mute;
+        LIVE.write().mute_automatic = false;
+        return Ok(());
+    }
     let level = if mute {
         let volume = LIVE.peek().volume.unwrap_or(0);
         if volume > 0 {
@@ -467,6 +611,44 @@ fn transfer(
     result
 }
 
+fn transfer_legacy(
+    link: &mut dyn Scanner,
+    events: &tokio::sync::mpsc::UnboundedSender<Event>,
+    command: &str,
+) -> Result<String, Error> {
+    let _ = events.send(Event::Log {
+        tx: true,
+        text: command.to_owned(),
+    });
+    let mut on_unsolicited = |line: String| {
+        let _ = events.send(Event::Log {
+            tx: false,
+            text: line.clone(),
+        });
+        let _ = events.send(Event::LegacyUnsolicited(line));
+    };
+    let predicate = |line: &str| is_bct8_unsolicited(command, line);
+    let result = link.send_routed(command, &predicate, &mut on_unsolicited);
+    let text = match &result {
+        Ok(reply) => reply.clone(),
+        Err(error) => format!("! {error}"),
+    };
+    let _ = events.send(Event::Log { tx: false, text });
+    result
+}
+
+fn optional_legacy_poll(
+    link: &mut dyn Scanner,
+    events: &tokio::sync::mpsc::UnboundedSender<Event>,
+    command: &str,
+) -> Result<Option<String>, Error> {
+    match transfer_legacy(link, events, command) {
+        Ok(reply) => Ok(Some(reply)),
+        Err(Error::Scanner { .. }) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 fn transfer_xml(
     link: &mut dyn Scanner,
     events: &tokio::sync::mpsc::UnboundedSender<Event>,
@@ -496,6 +678,59 @@ fn poll_once(
     family: Family,
 ) -> Result<Event, Error> {
     let started = Instant::now();
+    if family == Family::Legacy {
+        let mode = optional_legacy_poll(link, events, "MD")?;
+        if mode.is_none() {
+            // SPEC: while the BCT8 is in its menu, only KEY commands are accepted.
+            return Ok(Event::LegacyPoll {
+                mode: None,
+                squelch: None,
+                channel: None,
+                lcd: None,
+                banks: None,
+                mute_control: None,
+                mute: None,
+                latency: started.elapsed(),
+            });
+        }
+        let squelch = optional_legacy_poll(link, events, "SQ")?;
+        let channel = optional_legacy_poll(link, events, "MA")?;
+        let status_every = if DISPLAY_WANTED.load(Ordering::Relaxed) {
+            5
+        } else {
+            LEVEL_EVERY
+        };
+        let lcd = if tick % status_every == 0 {
+            let banks = transfer_legacy(link, events, "LCD BNK");
+            let channel = transfer_legacy(link, events, "LCD CHN");
+            let frequency = transfer_legacy(link, events, "LCD FRQ");
+            match (banks, channel, frequency) {
+                (Ok(banks), Ok(channel), Ok(frequency)) => Some((banks, channel, frequency)),
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let banks = (tick % LEVEL_EVERY == 0)
+            .then(|| transfer_legacy(link, events, "SB").ok())
+            .flatten();
+        let mute = (tick % LEVEL_EVERY == 0)
+            .then(|| transfer_legacy(link, events, "MU?").ok())
+            .flatten();
+        let mute_control = (tick % LEVEL_EVERY == 0)
+            .then(|| transfer_legacy(link, events, "MU").ok())
+            .flatten();
+        return Ok(Event::LegacyPoll {
+            mode,
+            squelch,
+            channel,
+            lcd,
+            banks,
+            mute_control,
+            mute,
+            latency: started.elapsed(),
+        });
+    }
     if matches!(family, Family::HomePatrol | Family::Sds) {
         // PLAN: PSI push activation and interval units are undocumented; poll the equivalent
         // documented GSI snapshot until captured hardware transcripts can verify PSI.
@@ -504,15 +739,15 @@ fn poll_once(
             if let Ok(reply) = transfer(link, events, "GCS") {
                 let _ = events.send(Event::Charge(reply));
             }
-            if family == Family::Sds && WATERFALL_WANTED.load(Ordering::Relaxed) {
-                if tick % 5 == 0 {
-                    if let Ok(reply) = transfer(link, events, "GST") {
-                        let _ = events.send(Event::WaterfallStatus(reply));
-                    }
+        }
+        if family == Family::Sds && WATERFALL_WANTED.load(Ordering::Relaxed) {
+            if tick % 5 == 0 {
+                if let Ok(reply) = transfer(link, events, "GST") {
+                    let _ = events.send(Event::WaterfallStatus(reply));
                 }
-                if let Ok(reply) = transfer(link, events, "GWF,1,1") {
-                    let _ = events.send(Event::WaterfallFrame(reply));
-                }
+            }
+            if let Ok(reply) = transfer(link, events, "GWF,1,1") {
+                let _ = events.send(Event::WaterfallFrame(reply));
             }
         }
         return Ok(Event::HpPoll {
@@ -561,11 +796,21 @@ fn run_actor(
 ) {
     let outcome = (|| -> Result<(), Error> {
         let mut link = open_scanner(&port, baud, Duration::from_secs(2))?;
+        if family == Family::Legacy {
+            for command in ["IDN", "QUN", "RIN", "HAN", "HPN"] {
+                let _ = transfer_legacy(&mut link, &events, command);
+            }
+        }
         let (mut tick, mut failures) = (0u32, 0u32);
         loop {
             match requests.recv_timeout(POLL_INTERVAL) {
                 Ok(Request::Command { command, reply }) => {
-                    let _ = reply.send(transfer(&mut link, &events, &command));
+                    let result = if family == Family::Legacy {
+                        transfer_legacy(&mut link, &events, &command)
+                    } else {
+                        transfer(&mut link, &events, &command)
+                    };
+                    let _ = reply.send(result);
                 }
                 Ok(Request::Job { program_mode, job }) => {
                     if program_mode {
@@ -640,13 +885,18 @@ fn run_actor(
                 }
                 Err(RecvTimeoutError::Disconnected) => {
                     // Remote control is being turned off: put the quick keys back first.
-                    if !matches!(family, Family::HomePatrol | Family::Sds)
+                    if matches!(family, Family::EarlyComma | Family::Gen1 | Family::Xt)
                         && let Err(e) = restore_filter_now(&mut DynLink(&mut link))
                     {
                         let _ = events.send(Event::Log {
                             tx: false,
                             text: format!("! could not restore the scan filter: {e}"),
                         });
+                    }
+                    if family == Family::Legacy {
+                        for command in ["IDF", "QUF", "RIF", "HAF", "HPF"] {
+                            let _ = transfer_legacy(&mut link, &events, command);
+                        }
                     }
                     return Ok(());
                 }
@@ -672,7 +922,7 @@ fn apply_event(event: Event) -> bool {
             }
             let mut store = ACTIVITY_STORE.lock().expect("activity");
             if store.observe(&state, Instant::now(), &clock()) {
-                *ACTIVITY.write() = store.clone();
+                publish_activity(&store);
             }
             drop(store);
             if *LIVE.peek() != state {
@@ -695,7 +945,7 @@ fn apply_event(event: Event) -> bool {
                 let state = snapshot.live;
                 let mut store = ACTIVITY_STORE.lock().expect("activity");
                 if store.observe(&state, Instant::now(), &clock()) {
-                    *ACTIVITY.write() = store.clone();
+                    publish_activity(&store);
                 }
                 drop(store);
                 if *LIVE.peek() != state {
@@ -715,6 +965,88 @@ fn apply_event(event: Event) -> bool {
             Ok(status) => *CHARGE_STATUS.write() = Some(status),
             Err(_) => HEALTH.write().errors += 1,
         },
+        Event::LegacyPoll {
+            mode,
+            squelch,
+            channel,
+            lcd,
+            banks,
+            mute_control,
+            mute,
+            latency,
+        } => {
+            let mut state = LIVE.peek().clone();
+            if let Some(mode) = mode {
+                if let Ok((mode, held)) = parse_bct8_mode(&mode) {
+                    state.mode = Some(mode);
+                    state.channel_held = held;
+                } else {
+                    HEALTH.write().errors += 1;
+                }
+            }
+            if let Some(squelch) = squelch {
+                state.squelch_open = squelch == "+";
+            }
+            if let Some(channel) = channel {
+                if !(state.squelch_open && state.tgid.is_some()) {
+                    let _ = apply_bct8_channel(&channel, &mut state);
+                }
+            }
+            if let Some(mute) = mute {
+                state.muted = mute == "MU ON";
+            }
+            if let Some(mute_control) = mute_control {
+                state.mute_automatic = mute_control == "MUA";
+            }
+            if let Some(banks) = banks {
+                match parse_bct8_banks(&banks) {
+                    Ok(banks) => *BCT8_BANKS.write() = Some(banks),
+                    Err(_) => HEALTH.write().errors += 1,
+                }
+            }
+            if let Some((bank, channel, frequency)) = lcd {
+                if let Some(freq_hz) = parse_bct8_lcd_frequency(&frequency) {
+                    state.freq_hz = Some(freq_hz);
+                }
+                match parse_bct8_lcd(&bank, &channel, &frequency) {
+                    Ok(mut display) => {
+                        if let Some(previous) = DISPLAY_STATUS.peek().as_ref() {
+                            display.weather_alert = previous.weather_alert;
+                        }
+                        display.squelch_open = state.squelch_open;
+                        display.muted = state.muted;
+                        *DISPLAY_STATUS.write() = Some(display);
+                    }
+                    Err(_) => HEALTH.write().errors += 1,
+                }
+            }
+            let mut store = ACTIVITY_STORE.lock().expect("activity");
+            if store.observe(&state, Instant::now(), &clock()) {
+                publish_activity(&store);
+            }
+            drop(store);
+            *LIVE.write() = state;
+            *HEALTH.write() = Health {
+                latency_ms: u32::try_from(latency.as_millis()).unwrap_or(u32::MAX),
+                errors: HEALTH.peek().errors,
+            };
+            *CONN.write() = ConnState::Connected;
+        }
+        Event::LegacyUnsolicited(line) => {
+            let mut state = LIVE.peek().clone();
+            let mut display = DISPLAY_STATUS.peek().clone().unwrap_or_default();
+            apply_bct8_unsolicited(&line, &mut state, &mut display);
+            let mut store = ACTIVITY_STORE.lock().expect("activity");
+            if store.observe(&state, Instant::now(), &clock()) {
+                publish_activity(&store);
+            }
+            drop(store);
+            if line.starts_with("ID E ") {
+                state.tgid = None;
+            }
+            *LIVE.write() = state;
+            *DISPLAY_STATUS.write() = Some(display);
+        }
         Event::WaterfallStatus(reply) => match parse_gst(&reply) {
             Ok(status) => *WATERFALL_STATUS.write() = Some(status),
             Err(_) => HEALTH.write().errors += 1,
@@ -783,7 +1115,10 @@ fn apply_event(event: Event) -> bool {
             }
         }
         Event::Log { tx, text } => log_line(tx, text),
-        Event::Stopped(_) => return false,
+        Event::Stopped(_) => {
+            persist_current_activity();
+            return false;
+        }
     }
     true
 }
@@ -830,8 +1165,16 @@ pub async fn start_remote_control() {
     let (events_tx, mut events) = tokio::sync::mpsc::unbounded_channel();
     *LINK.lock().expect("control link") = Some(tx);
     *LIVE.write() = LiveState::default();
-    *ACTIVITY_STORE.lock().expect("activity") = ActivityLog::default();
-    *ACTIVITY.write() = ActivityLog::default();
+    *ACTIVITY_RADIO.lock().expect("activity radio") = Some(info.id.clone());
+    let activity = match load_activity(&info.id) {
+        Ok(activity) => activity,
+        Err(error) => {
+            push_message(MessageKind::Warning, "control", error);
+            ActivityLog::default()
+        }
+    };
+    *ACTIVITY_STORE.lock().expect("activity") = activity.clone();
+    *ACTIVITY.write() = activity;
     *HEALTH.write() = Health::default();
     *DISPLAY_STATUS.write() = None;
     *GPS_FIX.write() = None;
@@ -844,10 +1187,11 @@ pub async fn start_remote_control() {
     WATERFALL_WANTED.store(false, Ordering::SeqCst);
     *PROGRAM_MODE.write() = false;
     *HP_QUICK_KEYS.write() = None;
+    *BCT8_BANKS.write() = None;
     *CONN.write() = ConnState::Connecting;
     *REMOTE_CONTROL.write() = true;
 
-    let baud = model.baud_rate();
+    let baud = info.baud;
     let gps = model
         .control_profile()
         .is_some_and(|profile| profile.gps_status);
@@ -864,7 +1208,7 @@ pub async fn start_remote_control() {
         );
     });
 
-    if !matches!(family, Family::HomePatrol | Family::Sds) && load_saved_snapshot() {
+    if matches!(family, Family::EarlyComma | Family::Gen1 | Family::Xt) && load_saved_snapshot() {
         *FILTER_ACTIVE.write() = true;
         push_message(
             MessageKind::Warning,
@@ -900,6 +1244,7 @@ pub async fn start_remote_control() {
     *QUICK_KEYS.write() = None;
     *GROUP_KEYS.write() = None;
     *HP_QUICK_KEYS.write() = None;
+    *BCT8_BANKS.write() = None;
     *QUICK_KEY_DRAFT.write() = QuickKeyDraft::default();
     *FILTER_ACTIVE.write() = SNAPSHOT.lock().expect("snapshot").is_some();
     *CONN.write() = if stop_reason.is_some() {
@@ -919,6 +1264,7 @@ pub async fn start_remote_control() {
 
 /// Turns Remote Control off. The actor notices, releases the port and reports back.
 pub fn stop_remote_control() {
+    persist_current_activity();
     SPECTRUM_WANTED.store(false, Ordering::SeqCst);
     WATERFALL_WANTED.store(false, Ordering::SeqCst);
     *LINK.lock().expect("control link") = None;
@@ -1103,6 +1449,9 @@ pub struct FilterSnapshot {
     pub qsl: String,
     /// `(system index, QGL digits)` for each system whose group keys were changed.
     pub qgl: Vec<(u16, String)>,
+    /// Original system lockout states, including systems with no quick key or a duplicate key.
+    #[serde(default)]
+    pub system_lockouts: Vec<(u16, Option<bool>)>,
 }
 
 /// The snapshot of the active filter, mirrored on disk so a crash or unplug can be recovered from.
@@ -1170,6 +1519,16 @@ pub fn toggled(digits: &str, position: usize) -> String {
         .collect()
 }
 
+fn exclusive_system_lockouts(
+    lockouts: &[(crate::database::Index, Option<bool>)],
+    selected: crate::database::Index,
+) -> Vec<(crate::database::Index, Option<bool>)> {
+    lockouts
+        .iter()
+        .map(|(index, _)| (*index, Some(*index != selected)))
+        .collect()
+}
+
 /// Leaves Program Mode's "scan hold" state by pressing Scan, ignoring a failure.
 fn resume_scanning(link: &mut DynLink) {
     let _ = link.send("KEY,S,P");
@@ -1185,6 +1544,12 @@ fn restore_filter_now(link: &mut DynLink) -> Result<(), Error> {
         for (sys, digits) in &snapshot.qgl {
             models::write_qgl(link, crate::database::Index(*sys), digits)?;
         }
+        let lockouts = snapshot
+            .system_lockouts
+            .iter()
+            .map(|(index, lockout)| (crate::database::Index(*index), *lockout))
+            .collect::<Vec<_>>();
+        models::write_system_lockouts(link, &lockouts)?;
         Ok(())
     })?;
     store_snapshot(None);
@@ -1318,8 +1683,9 @@ pub async fn scan_only(system: SystemSummary, group: Option<u8>) {
     let Some(key) = system.quick_key else { return };
     let sys_index = system.index;
     let result = run_job(true, move |link| {
-        let (qsl, unaffected) = models::with_program_mode(link, |link| {
+        let qsl = models::with_program_mode(link, |link| {
             let before_qsl = models::read_qsl(link)?;
+            let before_lockouts = models::read_system_lockouts(link)?;
             let before_qgl = match group {
                 Some(_) => Some(models::read_qgl(link, sys_index)?),
                 None => None,
@@ -1333,7 +1699,17 @@ pub async fn scan_only(system: SystemSummary, group: Option<u8>) {
                     .unwrap_or(FilterSnapshot {
                         qsl: before_qsl.clone(),
                         qgl: Vec::new(),
+                        system_lockouts: before_lockouts
+                            .iter()
+                            .map(|(index, lockout)| (index.0, *lockout))
+                            .collect(),
                     });
+            if snapshot.system_lockouts.is_empty() {
+                snapshot.system_lockouts = before_lockouts
+                    .iter()
+                    .map(|(index, lockout)| (index.0, *lockout))
+                    .collect();
+            }
             if let Some(q) = &before_qgl {
                 if !snapshot.qgl.iter().any(|(i, _)| *i == sys_index.0) {
                     snapshot.qgl.push((sys_index.0, q.clone()));
@@ -1343,18 +1719,18 @@ pub async fn scan_only(system: SystemSummary, group: Option<u8>) {
 
             let digits = only_key(&before_qsl, models::qsl_position(key));
             models::write_qsl(link, &digits)?;
+            let exclusive_lockouts = exclusive_system_lockouts(&before_lockouts, sys_index);
+            models::write_system_lockouts(link, &exclusive_lockouts)?;
             if let (Some(g), Some(q)) = (group, before_qgl) {
                 models::write_qgl(link, sys_index, &only_key(&q, models::qgl_position(g)))?;
             }
-            // Systems without a quick key cannot be switched off, so they keep scanning.
-            let unaffected = digits.bytes().filter(|&b| b == b'0').count();
-            Ok((digits, unaffected))
+            Ok(digits)
         })?;
         resume_scanning(link);
-        Ok((qsl, unaffected))
+        Ok(qsl)
     })
     .await;
-    if let Some((digits, _)) = warn("Scan only", result) {
+    if let Some(digits) = warn("Scan only", result) {
         *FILTER_ACTIVE.write() = true;
         if let Some(keys) = QUICK_KEYS.write().as_mut() {
             keys.qsl = digits;
@@ -1362,7 +1738,7 @@ pub async fn scan_only(system: SystemSummary, group: Option<u8>) {
         push_message(
             MessageKind::Note,
             "control",
-            "Temporary scan filter applied. Systems without a quick key still scan; use Restore to undo.".to_string(),
+            "Temporary scan filter applied. Only the selected system is unlocked; use Restore to undo.".to_string(),
         );
         *GROUP_KEYS.write() = None;
     }
@@ -1395,6 +1771,23 @@ mod tests {
         assert_eq!(only_key("1201", 1), "2102");
         assert_eq!(toggled("1201", 0), "2201");
         assert_eq!(toggled("1201", 2), "1201");
+    }
+
+    #[test]
+    fn scan_only_locks_every_other_system_regardless_of_previous_state() {
+        let systems = [
+            (crate::database::Index(10), None),
+            (crate::database::Index(20), Some(true)),
+            (crate::database::Index(30), Some(false)),
+        ];
+        assert_eq!(
+            exclusive_system_lockouts(&systems, crate::database::Index(20)),
+            vec![
+                (crate::database::Index(10), Some(true)),
+                (crate::database::Index(20), Some(false)),
+                (crate::database::Index(30), Some(true)),
+            ]
+        );
     }
 
     /// VOL and SQL replies yield their level; mismatched replies do not.

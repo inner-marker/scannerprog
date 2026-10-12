@@ -512,6 +512,16 @@ pub trait Scanner {
     /// Send one command and return its reply line.
     fn send(&mut self, cmd: &str) -> Result<String, Error>;
 
+    /// Send one command while routing interleaved unsolicited lines before returning its reply.
+    fn send_routed(
+        &mut self,
+        cmd: &str,
+        _is_unsolicited: &dyn Fn(&str) -> bool,
+        _on_unsolicited: &mut dyn FnMut(String),
+    ) -> Result<String, Error> {
+        self.send(cmd)
+    }
+
     /// Send a command whose response is an XML preamble followed by a multi-line document.
     fn send_xml(&mut self, _cmd: &str, _closing_tag: &str) -> Result<String, Error> {
         Err(Error::UnsupportedOperation(
@@ -1220,6 +1230,33 @@ pub fn read_system_summaries<S: Scanner>(sc: &mut S) -> Result<Vec<SystemSummary
             },
         })
         .collect())
+}
+
+/// Lists every system index and its current lockout state. Must be called in Program Mode.
+pub fn read_system_lockouts<S: Scanner>(sc: &mut S) -> Result<Vec<(Index, Option<bool>)>, Error> {
+    let head = parse_index_reply("SIH", &sc.send("SIH")?)?;
+    let records = walk_list(sc, head, |sc, idx| {
+        let rec = SystemRecord::parse(&sc.send(&format!("SIN,{idx}"))?)?;
+        let fwd = rec.links.fwd;
+        Ok((rec, fwd))
+    })?;
+    Ok(records
+        .into_iter()
+        .map(|(index, record)| (index, record.lockout))
+        .collect())
+}
+
+/// Updates system lockout states without changing their other settings. Must be called in Program Mode.
+pub fn write_system_lockouts<S: Scanner>(
+    sc: &mut S,
+    lockouts: &[(Index, Option<bool>)],
+) -> Result<(), Error> {
+    for (index, lockout) in lockouts {
+        let mut record = SystemRecord::parse(&sc.send(&format!("SIN,{index}"))?)?;
+        record.lockout = *lockout;
+        expect_ok("SIN", &sc.send(&record.to_set(*index))?)?;
+    }
+    Ok(())
 }
 
 /// Lists the groups of system `sys` with their quick keys. Must be called in Program Mode.

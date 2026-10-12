@@ -11,6 +11,7 @@
 - Added the BCD996XT and BCD996P2 (database and live control; untested on hardware). Their volume (0–29) and squelch (0–19) ranges differ, there is no power-off command, and the `[RECORD]` fields are not preserved.
 - Scanner page Phase 2:
   - Added staged System/Group Quick Key edits with a single Program Mode apply, discard support, paging, digit shortcuts, and a visible Program Mode badge.
+  - Corrected **Scan only this** so group filters temporarily lock every other system, including systems without a quick key or systems sharing the selected quick key, and restore their original lockout states afterward.
   - Added a demand-driven `STS` LCD mirror, model-specific virtual keypads with tap/long-press gestures, `CSC` sweep display, battery/weather/GPS status, and log/error navigation.
   - Added live-control profiles for the BR330T, BCD996T, BCT15 and BCT15X. Their older database dialects remain explicitly unsupported rather than being sent incompatible XT/P2 memory commands.
   - Added parsers/tests for `STS` and streamed `CSC` samples. Hardware transcript/UI replay remains pending captured data.
@@ -20,6 +21,16 @@
   - Added native system/department/channel hold, next/previous, temporary/permanent avoid, scan resume, quick tune, three-part number-tag jump, and `URC` recording control with documented error messages.
   - Added live FQK/SQK/DQK quick-key grids, detailed SDS `GCS` battery status, and a bounded SDS `GST`/`GWF` waterfall display.
   - `GSI` and `GWF` are polled because the supplied specifications omit PSI/PWF activation details. Hardware transcript/UI replay remains pending captured data.
+- Scanner page Phase 4:
+  - Added BCT8 detection through its legacy `SI`/`VR` identity commands with automatic probing of its documented 2400–57600 baud rates.
+  - Added a routed legacy transport so asynchronous ID, squelch, priority, and highway-alert messages can be consumed without being mistaken for command replies.
+  - Added fixed-width BCT8 channel/mode/LCD parsing, native `MU` mute, `RF` quick tune, legacy keypad actions, Highway and service modes, and live `SB` scan-bank controls.
+  - Database transfer remains explicitly unavailable because the BCT8's fixed 250-channel memory protocol is not compatible with the common database driver. Hardware transcript replay remains pending.
+- Scanner page Phase 5:
+  - Preserved scanners' raw single-byte LCD glyphs and added documented large/small-font rendering for status labels, signal bars, arrows, indicators, and unknown-code fallbacks.
+  - Made activity history durable per radio, changed clearing to explicitly remove history, and moved CSV export to a save dialog.
+  - Added stable radio identities and retained the last successful port/model/baud so reconnect detection can try the known baud first.
+  - Kept one active radio session in the UI while laying the persistence and identity groundwork for future multi-radio support. Hardware glyph verification remains pending.
 
 ## [0.2.0] - Basic Scanner Functions
 

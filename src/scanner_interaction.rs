@@ -9,11 +9,14 @@ use crate::merge::merge_import;
 use crate::models::{self, Error, Projection, Scanner, ScannerModel};
 
 /// Serial connection and identity details for a supported scanner.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ScannerInfo {
+    /// Stable per-radio identity used by persisted session data.
+    pub id: String,
     pub port: String,
     pub model: String,
     pub firmware: String,
+    pub baud: u32,
 }
 
 /// USB vendor, product, and descriptive information reported by the operating system.
@@ -30,21 +33,110 @@ pub struct UsbDeviceInfo {
 pub struct ScannerDetection {
     pub scanner: Option<ScannerInfo>,
     pub usb_device: Option<UsbDeviceInfo>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct ConnectionPreference {
+    port: String,
+    model: String,
+    baud: u32,
+}
+
+fn connection_preference_path() -> Option<std::path::PathBuf> {
+    Some(
+        dirs::data_local_dir()?
+            .join("Scanner Programmer")
+            .join("last-connection.ron"),
+    )
+}
+
+fn load_connection_preference() -> Result<Option<ConnectionPreference>, String> {
+    let Some(path) = connection_preference_path() else {
+        return Ok(None);
+    };
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(format!("Could not read {}: {error}", path.display()));
+        }
+    };
+    ron::from_str(&text)
+        .map(Some)
+        .map_err(|error| format!("Could not parse {}: {error}", path.display()))
+}
+
+fn save_connection_preference(info: &ScannerInfo) -> Result<(), String> {
+    let path = connection_preference_path()
+        .ok_or("No local application-data folder is available for connection settings.")?;
+    let parent = path
+        .parent()
+        .ok_or("The connection-settings path has no parent folder.")?;
+    std::fs::create_dir_all(parent)
+        .map_err(|error| format!("Could not create {}: {error}", parent.display()))?;
+    let text = ron::ser::to_string(&ConnectionPreference {
+        port: info.port.clone(),
+        model: info.model.clone(),
+        baud: info.baud,
+    })
+    .map_err(|error| format!("Could not serialize connection settings: {error}"))?;
+    std::fs::write(&path, text)
+        .map_err(|error| format!("Could not save {}: {error}", path.display()))
+}
+
+fn connection_preference_matches(
+    preference: Option<&ConnectionPreference>,
+    info: &ScannerInfo,
+) -> bool {
+    preference.is_some_and(|preference| {
+        preference.port == info.port
+            && preference.model == info.model
+            && preference.baud == info.baud
+    })
+}
+
+fn radio_id(model: &str, port: &str, usb: &UsbDeviceInfo) -> String {
+    usb.serial_number
+        .as_deref()
+        .filter(|serial| !serial.trim().is_empty())
+        .map_or_else(
+            || format!("{model}@{port}"),
+            |serial| format!("{model}#{serial}"),
+        )
 }
 
 // Global signal for the currently connected scanner (UsbDeviceInfo)
 /// USB device seen during port detection, whether supported or not.
 pub static SCANNER_USB_DEVICE: GlobalSignal<Option<UsbDeviceInfo>> = Signal::global(|| None);
 
+/// Preserve scanner-specific single-byte LCD codes in Unicode's private-use area.
+fn decode_scanner_bytes(bytes: &[u8]) -> String {
+    if let Ok(text) = std::str::from_utf8(bytes) {
+        return text.to_owned();
+    }
+    bytes
+        .iter()
+        .map(|byte| {
+            if byte.is_ascii() {
+                char::from(*byte)
+            } else {
+                char::from_u32(0xE000 + u32::from(*byte)).unwrap_or('\u{FFFD}')
+            }
+        })
+        .collect()
+}
+
 /// Sends one `\r`-terminated command and returns the response without its `CMD,` prefix.
 fn query(port: &mut Box<dyn serialport::SerialPort>, cmd: &str) -> Option<String> {
+    let _ = port.clear(serialport::ClearBuffer::Input);
     port.write_all(format!("{cmd}\r").as_bytes()).ok()?;
     let mut buf = Vec::new();
     let mut byte = [0u8; 1];
     while port.read_exact(&mut byte).is_ok() {
         if byte[0] == b'\r' {
-            let line = String::from_utf8_lossy(&buf).into_owned();
-            return line.strip_prefix(&format!("{cmd},")).map(str::to_owned);
+            let line = decode_scanner_bytes(&buf);
+            return Some(line);
         }
         buf.push(byte[0]);
     }
@@ -58,6 +150,14 @@ pub fn detect_scanner() -> Result<ScannerDetection, serialport::Error> {
     // Get a list of all available serial ports.
     let ports = serialport::available_ports()?;
     let mut usb_device: Option<UsbDeviceInfo> = None;
+    let mut warnings = Vec::new();
+    let preference = match load_connection_preference() {
+        Ok(preference) => preference,
+        Err(error) => {
+            warnings.push(error);
+            None
+        }
+    };
 
     // for each port ...
     for p in ports {
@@ -80,39 +180,83 @@ pub fn detect_scanner() -> Result<ScannerDetection, serialport::Error> {
 
         // Keep this probe short so an unrelated or busy USB serial device does not stall detection.
         // Try to open the serial port with a 500ms timeout.
-        let mut port = match serialport::new(&p.port_name, 115_200)
-            .timeout(Duration::from_millis(500))
-            .open()
+        let mut baud_rates = vec![115_200, 57_600, 38_400, 19_200, 9_600, 4_800, 2_400];
+        if let Some(preference) = preference
+            .as_ref()
+            .filter(|saved| saved.port == p.port_name)
         {
-            Ok(port) => port,
-            Err(error) => {
-                eprintln!("Failed to open serial port {}: {error}", p.port_name);
-                continue;
-            }
-        };
-
-        // Query the scanner for its model and firmware information.
-        let Some(model) = query(&mut port, "MDL") else {
-            continue;
-        };
-        // A model response is useful only if this app knows how to program that model.
-        if models::find(&model).is_none() {
-            continue; // a Uniden scanner, but not a model we support
+            baud_rates.retain(|baud| *baud != preference.baud);
+            baud_rates.insert(0, preference.baud);
         }
-        // println!("Detected scanner model: {}", model);
-        // Query the scanner for its firmware information.
-        let firmware = query(&mut port, "VER").unwrap_or_else(|| "unknown".into());
-        // println!("Detected scanner firmware: {}", firmware);
+        for baud in baud_rates {
+            let mut port = match serialport::new(&p.port_name, baud)
+                .timeout(Duration::from_millis(500))
+                .open()
+            {
+                Ok(port) => port,
+                Err(error) => {
+                    eprintln!(
+                        "Failed to open serial port {} at {baud} baud: {error}",
+                        p.port_name
+                    );
+                    continue;
+                }
+            };
 
-        // Return the scanner information if both model and firmware were successfully queried.
-        return Ok(ScannerDetection {
-            scanner: Some(ScannerInfo {
-                port: p.port_name.clone(),
-                model,
-                firmware,
-            }),
-            usb_device: Some(device),
-        });
+            if let Some(reply) = query(&mut port, "MDL")
+                && let Some(model) = reply.strip_prefix("MDL,")
+                && models::find(model).is_some()
+            {
+                let firmware = query(&mut port, "VER")
+                    .and_then(|reply| reply.strip_prefix("VER,").map(str::to_owned))
+                    .unwrap_or_else(|| "unknown".into());
+                let scanner = ScannerInfo {
+                    id: radio_id(model, &p.port_name, &device),
+                    port: p.port_name.clone(),
+                    model: model.to_owned(),
+                    firmware,
+                    baud,
+                };
+                if !connection_preference_matches(preference.as_ref(), &scanner) {
+                    if let Err(error) = save_connection_preference(&scanner) {
+                        warnings.push(error);
+                    }
+                }
+                return Ok(ScannerDetection {
+                    scanner: Some(scanner),
+                    usb_device: Some(device),
+                    warnings,
+                });
+            }
+
+            if let Some(reply) = query(&mut port, "SI")
+                && let Some(identity) = reply.strip_prefix("SI ")
+            {
+                let model = identity.split(',').next().unwrap_or_default();
+                if models::find(model).is_some() {
+                    let firmware = query(&mut port, "VR")
+                        .and_then(|reply| reply.strip_prefix("VR").map(str::to_owned))
+                        .unwrap_or_else(|| "unknown".into());
+                    let scanner = ScannerInfo {
+                        id: radio_id(model, &p.port_name, &device),
+                        port: p.port_name.clone(),
+                        model: model.to_owned(),
+                        firmware,
+                        baud,
+                    };
+                    if !connection_preference_matches(preference.as_ref(), &scanner) {
+                        if let Err(error) = save_connection_preference(&scanner) {
+                            warnings.push(error);
+                        }
+                    }
+                    return Ok(ScannerDetection {
+                        scanner: Some(scanner),
+                        usb_device: Some(device),
+                        warnings,
+                    });
+                }
+            }
+        }
     }
 
     // Keep USB identity for the home page even when no compatible scanner answered.
@@ -120,6 +264,7 @@ pub fn detect_scanner() -> Result<ScannerDetection, serialport::Error> {
     Ok(ScannerDetection {
         scanner: None,
         usb_device,
+        warnings,
     })
 }
 
@@ -192,7 +337,7 @@ impl Scanner for SerialScanner {
             }
             buf.push(byte[0]);
         }
-        let reply = String::from_utf8_lossy(&buf).into_owned();
+        let reply = decode_scanner_bytes(&buf);
         let name = cmd.split(',').next().unwrap_or(cmd);
         let body = reply.strip_prefix(&format!("{name},")).unwrap_or(&reply);
         if matches!(body, "ERR" | "NG" | "FER" | "ORER") {
@@ -202,6 +347,42 @@ impl Scanner for SerialScanner {
             });
         }
         Ok(reply)
+    }
+
+    fn send_routed(
+        &mut self,
+        cmd: &str,
+        is_unsolicited: &dyn Fn(&str) -> bool,
+        on_unsolicited: &mut dyn FnMut(String),
+    ) -> Result<String, Error> {
+        self.0
+            .write_all(format!("{cmd}\r").as_bytes())
+            .map_err(Error::Io)?;
+        loop {
+            let mut buf = Vec::new();
+            let mut byte = [0u8; 1];
+            loop {
+                self.0.read_exact(&mut byte).map_err(Error::Io)?;
+                if byte[0] == b'\r' {
+                    break;
+                }
+                if byte[0] != b'\n' {
+                    buf.push(byte[0]);
+                }
+            }
+            let reply = decode_scanner_bytes(&buf);
+            if is_unsolicited(&reply) {
+                on_unsolicited(reply);
+                continue;
+            }
+            if matches!(reply.as_str(), "ERR" | "NG" | "FER" | "ORER") {
+                return Err(Error::Scanner {
+                    cmd: cmd.to_owned(),
+                    reply,
+                });
+            }
+            return Ok(reply);
+        }
     }
 
     fn send_xml(&mut self, cmd: &str, closing_tag: &str) -> Result<String, Error> {
@@ -218,7 +399,7 @@ impl Scanner for SerialScanner {
                 if line.is_empty() {
                     continue;
                 }
-                let text = String::from_utf8_lossy(&line).into_owned();
+                let text = decode_scanner_bytes(&line);
                 line.clear();
                 let body = text
                     .strip_prefix(&format!("{cmd},"))
@@ -273,7 +454,7 @@ impl Scanner for SerialScanner {
         while !should_stop() {
             match self.0.read_exact(&mut byte) {
                 Ok(()) if byte[0] == b'\r' => {
-                    let received = String::from_utf8_lossy(&line).into_owned();
+                    let received = decode_scanner_bytes(&line);
                     if matches!(received.as_str(), "ERR" | "NG" | "FER" | "ORER" | "CSC,NG") {
                         let _ = self.0.set_timeout(old_timeout);
                         return Err(Error::Scanner {
@@ -310,11 +491,11 @@ impl Scanner for SerialScanner {
         self.0
             .set_timeout(old_timeout)
             .map_err(|e| Error::Io(e.into()))?;
-        let reply = String::from_utf8_lossy(&line);
+        let reply = decode_scanner_bytes(&line);
         if reply != "CSC,OK" {
             return Err(Error::UnexpectedReply {
                 expected: "CSC",
-                reply: reply.into_owned(),
+                reply,
             });
         }
         Ok(())
@@ -532,6 +713,7 @@ pub fn save_database_ron(
     if path.extension().is_none() {
         path.set_extension("ron");
     }
+
     let text = ron::ser::to_string_pretty(db, ron::ser::PrettyConfig::default())
         .map_err(|e| format!("Could not serialize the database: {e}"))?;
     std::fs::write(&path, text).map_err(|e| format!("Could not write {}: {e}", path.display()))?;
@@ -546,4 +728,16 @@ pub fn load_database_ron(path: &std::path::Path) -> Result<ScanDatabase, String>
         ron::from_str(&text).map_err(|e| format!("Could not parse {}: {e}", path.display()))?;
     db.migrate();
     Ok(db)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::decode_scanner_bytes;
+
+    #[test]
+    fn scanner_byte_decoder_preserves_ascii_utf8_and_raw_glyphs() {
+        assert_eq!(decode_scanner_bytes(b"SCAN"), "SCAN");
+        assert_eq!(decode_scanner_bytes("Temp °".as_bytes()), "Temp °");
+        assert_eq!(decode_scanner_bytes(&[b'A', 0x81, b'B']), "A\u{e081}B");
+    }
 }

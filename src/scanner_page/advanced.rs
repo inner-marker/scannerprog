@@ -8,7 +8,7 @@ use crate::control::{
     DISPLAY_STATUS, DISPLAY_WANTED, SPECTRUM, SPECTRUM_ACTIVE, WATERFALL, WATERFALL_ACTIVE,
     WATERFALL_STATUS, press_key, start_spectrum, start_waterfall, stop_spectrum, stop_waterfall,
 };
-use crate::models::live::{Capability, DisplayLine, Family};
+use crate::models::live::{Capability, DisplayLine, Family, lcd_glyph};
 use crate::scanner_interaction::connected_model;
 
 #[component]
@@ -19,14 +19,18 @@ fn LcdLine(line: DisplayLine, large: bool) -> Element {
             for (index, character) in line.text.chars().enumerate() {
                 {
                     let mode = modes.get(index).copied().unwrap_or(' ');
+                    let glyph = lcd_glyph(character, large);
+                    let mode_class = match mode {
+                        '*' => "reverse",
+                        '_' => "underline",
+                        _ => "",
+                    };
+                    let class = format!("lcd-cell {} {mode_class}", glyph.class);
                     rsx! {
                         span {
-                            class: match mode {
-                                '*' => "reverse",
-                                '_' => "underline",
-                                _ => "",
-                            },
-                            "{character}"
+                            class,
+                            title: glyph.title,
+                            "{glyph.text}"
                         }
                     }
                 }
@@ -84,7 +88,7 @@ pub fn VirtualRemote() -> Element {
                             LcdLine { line, large: status.large.get(index).copied().unwrap_or(false) }
                         }
                     } else {
-                        p { class: "control-hint", "Waiting for the next STS display poll…" }
+                        p { class: "control-hint", "Waiting for the next display poll…" }
                     }
                 }
             } else {
