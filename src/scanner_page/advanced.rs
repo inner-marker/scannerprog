@@ -5,10 +5,10 @@ use std::sync::atomic::Ordering;
 
 use super::capability::{CapButton, gate};
 use crate::control::{
-    DISPLAY_STATUS, DISPLAY_WANTED, SPECTRUM, SPECTRUM_ACTIVE, press_key, start_spectrum,
-    stop_spectrum,
+    DISPLAY_STATUS, DISPLAY_WANTED, SPECTRUM, SPECTRUM_ACTIVE, WATERFALL, WATERFALL_ACTIVE,
+    WATERFALL_STATUS, press_key, start_spectrum, start_waterfall, stop_spectrum, stop_waterfall,
 };
-use crate::models::live::{Capability, DisplayLine};
+use crate::models::live::{Capability, DisplayLine, Family};
 use crate::scanner_interaction::connected_model;
 
 #[component]
@@ -104,6 +104,18 @@ pub fn VirtualRemote() -> Element {
 /// CSC sweep display. SVG is used instead of a canvas because Dioxus can update it without JS.
 #[component]
 pub fn SpectrumView() -> Element {
+    let sds = connected_model()
+        .and_then(|model| model.control_profile())
+        .is_some_and(|profile| profile.family == Family::Sds);
+    if sds {
+        rsx! { WaterfallView {} }
+    } else {
+        rsx! { CscSpectrumView {} }
+    }
+}
+
+#[component]
+fn CscSpectrumView() -> Element {
     // PLAN: SVG replaces the suggested canvas. CSC is low-rate serial data, so a 30 fps canvas
     // adds an interop dependency without improving fidelity.
     use_drop(stop_spectrum);
@@ -167,6 +179,89 @@ pub fn SpectrumView() -> Element {
             } else {
                 p { class: "control-hint", "The sweep is stopped." }
                 button { onclick: move |_| start_spectrum(), "Restart sweep" }
+            }
+        }
+    }
+}
+
+#[component]
+fn WaterfallView() -> Element {
+    use_drop(stop_waterfall);
+    let capability = gate(Capability::Waterfall);
+    let mut confirmed = use_signal(|| false);
+    let active = *WATERFALL_ACTIVE.read();
+    let status = WATERFALL_STATUS.read().clone();
+    let frames: Vec<_> = WATERFALL.read().iter().rev().take(40).cloned().collect();
+    let height = frames.len().max(1) as f64 * 5.0;
+
+    rsx! {
+        div { class: "spectrum-view waterfall-view",
+            if !capability.is_enabled() {
+                p { class: "control-hint", "{capability.reason().unwrap_or_default()}" }
+            } else if !confirmed() {
+                p { "Waterfall mode changes the scanner display until this view closes." }
+                CapButton {
+                    cap: Capability::Waterfall,
+                    onclick: move |()| {
+                        confirmed.set(true);
+                        spawn(start_waterfall());
+                    },
+                    "Start waterfall"
+                }
+            } else if active {
+                div { class: "spectrum-labels",
+                    span {
+                        if let Some(lower) = status.as_ref().and_then(|value| value.lower_hz) {
+                            "{lower as f64 / 1e6:.4} MHz"
+                        }
+                    }
+                    span {
+                        if let Some(center) = status.as_ref().and_then(|value| value.center_hz) {
+                            "Center {center as f64 / 1e6:.4} MHz"
+                        }
+                    }
+                    span {
+                        if let Some(upper) = status.as_ref().and_then(|value| value.upper_hz) {
+                            "{upper as f64 / 1e6:.4} MHz"
+                        }
+                    }
+                }
+                svg {
+                    class: "waterfall-chart",
+                    view_box: "0 0 1200 {height}",
+                    preserve_aspect_ratio: "none",
+                    for (row, frame) in frames.iter().enumerate() {
+                        for (column, value) in frame.iter().step_by(2).enumerate() {
+                            {
+                                let lightness = (15 + u32::from(*value).min(1023) * 60 / 1023) as u8;
+                                rsx! {
+                                    rect {
+                                        x: "{column * 10}",
+                                        y: "{row * 5}",
+                                        width: "10",
+                                        height: "5",
+                                        fill: "hsl(135 80% {lightness}%)",
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                button {
+                    onclick: move |_| {
+                        stop_waterfall();
+                        confirmed.set(false);
+                    },
+                    "Stop waterfall"
+                }
+            } else {
+                p { class: "control-hint", "The waterfall is stopped." }
+                button {
+                    onclick: move |_| {
+                        spawn(start_waterfall());
+                    },
+                    "Restart waterfall"
+                }
             }
         }
     }

@@ -14,7 +14,11 @@ pub struct PendingConfirm {
 static CONFIRM: GlobalSignal<Option<PendingConfirm>> = Signal::global(|| None);
 
 /// Ask "are you sure?" and run `action` only if the user confirms.
-pub fn confirm(message: impl Into<String>, confirm_label: impl Into<String>, action: impl Fn() + 'static) {
+pub fn confirm(
+    message: impl Into<String>,
+    confirm_label: impl Into<String>,
+    action: impl Fn() + 'static,
+) {
     open(message.into(), None, confirm_label.into(), action);
 }
 
@@ -25,12 +29,27 @@ pub fn confirm_with_details(
     confirm_label: impl Into<String>,
     action: impl Fn() + 'static,
 ) {
-    open(message.into(), Some(details.into()), confirm_label.into(), action);
+    open(
+        message.into(),
+        Some(details.into()),
+        confirm_label.into(),
+        action,
+    );
 }
 
 /// Replaces the current prompt with a new message and a one-shot confirmation action.
-fn open(message: String, details: Option<String>, confirm_label: String, action: impl Fn() + 'static) {
-    *CONFIRM.write() = Some(PendingConfirm { message, details, confirm_label, action: Rc::new(action) });
+fn open(
+    message: String,
+    details: Option<String>,
+    confirm_label: String,
+    action: impl Fn() + 'static,
+) {
+    *CONFIRM.write() = Some(PendingConfirm {
+        message,
+        details,
+        confirm_label,
+        action: Rc::new(action),
+    });
 }
 
 /// The modal itself. Render once, near the root.

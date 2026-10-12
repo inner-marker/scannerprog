@@ -37,7 +37,12 @@ fn same_system(existing: &System, incoming: &System) -> bool {
         return true;
     }
     existing.info.sys_type == incoming.info.sys_type
-        && existing.info.name.as_str().trim().eq_ignore_ascii_case(incoming.info.name.as_str().trim())
+        && existing
+            .info
+            .name
+            .as_str()
+            .trim()
+            .eq_ignore_ascii_case(incoming.info.name.as_str().trim())
 }
 
 /// Merges freshly imported systems into `db`.
@@ -62,7 +67,8 @@ pub fn merge_import(db: &mut ScanDatabase, source: &Source, incoming: Vec<System
             external_id: new.provenance.external_id.clone(),
             baseline: Some(new.content_hash()),
         };
-        let found = (0..db.systems.len()).find(|&i| !claimed[i] && same_system(&db.systems[i], &new));
+        let found =
+            (0..db.systems.len()).find(|&i| !claimed[i] && same_system(&db.systems[i], &new));
         let Some(i) = found else {
             db.systems.push(new);
             claimed.push(true);
@@ -96,13 +102,19 @@ mod tests {
             uid: Uid::new(),
             provenance: Provenance::default(),
             index: Default::default(),
-            info: SystemRecord { name: Name::new(name).unwrap(), sys_type: SystemType::Conventional, ..Default::default() },
+            info: SystemRecord {
+                name: Name::new(name).unwrap(),
+                sys_type: SystemType::Conventional,
+                ..Default::default()
+            },
             kind: SystemKind::Conventional { groups: Vec::new() },
         }
     }
 
     fn scanner() -> Source {
-        Source::Scanner { model: "BCD325P2".into() }
+        Source::Scanner {
+            model: "BCD325P2".into(),
+        }
     }
 
     #[test]

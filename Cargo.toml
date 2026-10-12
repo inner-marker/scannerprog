@@ -10,6 +10,7 @@ edition = "2024"
 chrono = "0.4.45"
 dioxus = { version = "0.7.10", features = ["router", "desktop"] }
 dirs = "7.0.0"
+quick-xml = "0.38.3"
 rfd = "0.17.2"
 ron = "0.12.2"
 serde = { version = "1.0.229", features = ["derive"] }

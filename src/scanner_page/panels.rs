@@ -4,12 +4,14 @@
 use dioxus::prelude::*;
 
 use super::capability::{CapButton, CapSlider, gate};
-use super::tools::OPEN_LOG_REQUEST;
+use super::tools::{OPEN_LOG_REQUEST, OPEN_SPECTRUM_REQUEST};
 use crate::control::{
-    CONN, ConnState, DISPLAY_STATUS, GPS_FIX, HEALTH, LIVE, PROGRAM_MODE, REMOTE_CONTROL, perform,
-    start_remote_control, stop_remote_control,
+    CHARGE_STATUS, CONN, ConnState, DISPLAY_STATUS, GPS_FIX, HEALTH, LIVE, PROGRAM_MODE,
+    REMOTE_CONTROL, perform, start_remote_control, stop_remote_control,
 };
-use crate::models::live::{Action, Capability, NOAA_CHANNELS, ScanMode, WEATHER_MODES, noaa_label};
+use crate::models::live::{
+    Action, Capability, Family, HoldLevel, NOAA_CHANNELS, ScanMode, WEATHER_MODES, noaa_label,
+};
 use crate::scanner_interaction::{DOWNLOAD_ACTIVE, SCANNER_INFO, connected_model};
 
 /// Runs `action` without blocking the UI.
@@ -97,6 +99,9 @@ pub fn ModeBar() -> Element {
         .and_then(|m| m.control_profile())
         .map(|p| p.service_banks)
         .unwrap_or(&[]);
+    let hp = connected_model()
+        .and_then(|model| model.control_profile())
+        .is_some_and(|profile| matches!(profile.family, Family::HomePatrol | Family::Sds));
     let current = |m: fn(&ScanMode) -> bool| mode.as_ref().is_some_and(m);
 
     rsx! {
@@ -110,6 +115,7 @@ pub fn ModeBar() -> Element {
             CapButton {
                 cap: Capability::ModeSwitch,
                 class: if current(|m| matches!(m, ScanMode::Service(_))) { "active" } else { "" },
+                blocked: hp.then(|| "HomePatrol/SDS scanners have no direct Service Scan jump command.".to_owned()),
                 onclick: move |()| open.set(if open() == Some(Popover::Service) { None } else { Some(Popover::Service) }),
                 "Service ▾"
             }
@@ -149,7 +155,11 @@ pub fn ModeBar() -> Element {
                 "Tone-Out"
             }
             CapButton { cap: Capability::Discovery, onclick: move |()| {}, "Discovery" }
-            CapButton { cap: Capability::Waterfall, onclick: move |()| {}, "Waterfall" }
+            CapButton {
+                cap: Capability::Waterfall,
+                onclick: move |()| *OPEN_SPECTRUM_REQUEST.write() += 1,
+                "Waterfall"
+            }
             CapButton { cap: Capability::Highway, onclick: move |()| {}, "Highway" }
         }
         match open() {
@@ -272,6 +282,9 @@ pub fn NowPlaying() -> Element {
 /// Hold, step, scan and avoid buttons.
 #[component]
 pub fn Transport() -> Element {
+    let hp = connected_model()
+        .and_then(|model| model.control_profile())
+        .is_some_and(|profile| matches!(profile.family, Family::HomePatrol | Family::Sds));
     rsx! {
         section { id: "transport", class: "panel",
             h2 { "Transport" }
@@ -280,8 +293,15 @@ pub fn Transport() -> Element {
                 CapButton { cap: Capability::Hold, title: "Hold on this channel (Space)", onclick: move |()| run(Action::Hold), "Hold" }
                 CapButton { cap: Capability::ResumeScan, title: "Resume scanning (S)", onclick: move |()| run(Action::ResumeScan), "Scan" }
                 CapButton { cap: Capability::StepNext, title: "Next (→)", onclick: move |()| run(Action::StepNext), "Next ▶" }
-                CapButton { cap: Capability::Avoid, title: "Lock out this channel (A)", onclick: move |()| run(Action::Avoid), "Avoid" }
-                CapButton { cap: Capability::HoldAtLevel, onclick: move |()| {}, "Hold at level" }
+                CapButton { cap: Capability::Avoid, title: "Temporarily avoid this channel (A)", onclick: move |()| run(Action::Avoid), if hp { "Temp avoid" } else { "Avoid" } }
+                if hp {
+                    CapButton { cap: Capability::Avoid, title: "Permanently avoid this channel", onclick: move |()| run(Action::AvoidPermanent), "Permanent avoid" }
+                }
+            }
+            div { class: "hold-levels", "Hold level:"
+                CapButton { cap: Capability::HoldAtLevel, onclick: move |()| run(Action::HoldLevel(HoldLevel::System)), "System" }
+                CapButton { cap: Capability::HoldAtLevel, onclick: move |()| run(Action::HoldLevel(HoldLevel::Department)), "Department" }
+                CapButton { cap: Capability::HoldAtLevel, onclick: move |()| run(Action::HoldLevel(HoldLevel::Channel)), "Channel" }
             }
         }
     }
@@ -327,6 +347,12 @@ pub fn Audio() -> Element {
                 onclick: move |()| run(Action::SetMute(!LIVE.peek().muted)),
                 if live.muted { "Unmute" } else { "Mute" }
             }
+            CapButton {
+                cap: Capability::Record,
+                class: if live.recording { "active record-active" } else { "" },
+                onclick: move |()| run(Action::SetRecord(!LIVE.peek().recording)),
+                if live.recording { "Stop recording" } else { "Start recording" }
+            }
         }
     }
 }
@@ -338,6 +364,7 @@ pub fn StatusStrip() -> Element {
     let on = *REMOTE_CONTROL.read();
     let status = DISPLAY_STATUS.read().clone();
     let profile = connected_model().and_then(|m| m.control_profile());
+    let charge = CHARGE_STATUS.read().clone();
 
     rsx! {
         footer { id: "status-strip",
@@ -354,10 +381,18 @@ pub fn StatusStrip() -> Element {
             }
             if let Some(profile) = profile {
                 if profile.battery_status {
-                    span {
-                        class: if status.as_ref().and_then(|s| s.battery_low) == Some(true) { "alert" } else { "" },
-                        "Battery: "
-                        if status.as_ref().and_then(|s| s.battery_low) == Some(true) { "Low" } else { "OK" }
+                    if let Some(charge) = charge {
+                        span {
+                            title: "{charge.millivolts} mV, {charge.current_ma} mA, {charge.temperature_c:.1} °C, charge state {charge.state}",
+                            class: if charge.percent <= 10 { "alert" } else { "" },
+                            "Battery: {charge.percent}%"
+                        }
+                    } else {
+                        span {
+                            class: if status.as_ref().and_then(|s| s.battery_low) == Some(true) { "alert" } else { "" },
+                            "Battery: "
+                            if status.as_ref().and_then(|s| s.battery_low) == Some(true) { "Low" } else { "OK" }
+                        }
                     }
                 } else {
                     span { class: "unavailable", title: "{gate(Capability::Battery).reason().unwrap_or_default()}", "Battery: n/a" }

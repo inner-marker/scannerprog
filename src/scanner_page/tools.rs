@@ -8,11 +8,12 @@ use super::capability::CapButton;
 use super::panels::run;
 use crate::control::{ACTIVITY, LIVE, TXRX_LOG, clear_activity};
 use crate::messages::{MessageKind, push_message};
-use crate::models::live::{Action, Capability};
-use crate::scanner_interaction::default_save_dir;
+use crate::models::live::{Action, Capability, Family};
+use crate::scanner_interaction::{connected_model, default_save_dir};
 
 /// Incremented by the status strip to open the connection log.
 pub static OPEN_LOG_REQUEST: GlobalSignal<u32> = Signal::global(|| 0);
+pub static OPEN_SPECTRUM_REQUEST: GlobalSignal<u32> = Signal::global(|| 0);
 pub static TOGGLE_DRAWER_REQUEST: GlobalSignal<u32> = Signal::global(|| 0);
 
 /// Set while a text box has focus, so keyboard shortcuts don't fire while typing.
@@ -107,23 +108,38 @@ pub fn QuickTune() -> Element {
 #[component]
 pub fn JumpToTag() -> Element {
     let mut typing = use_context::<Typing>();
+    let mut favorite = use_signal(String::new);
     let mut sys = use_signal(String::new);
     let mut chan = use_signal(String::new);
+    let hp = connected_model()
+        .and_then(|model| model.control_profile())
+        .is_some_and(|profile| matches!(profile.family, Family::HomePatrol | Family::Sds));
     let parse = |s: &str| s.trim().parse::<u16>().ok();
-    let (s, c) = (parse(&sys()), parse(&chan()));
+    let (f, s, c) = (parse(&favorite()), parse(&sys()), parse(&chan()));
     let bad = |t: &str, v: Option<u16>| !t.trim().is_empty() && v.is_none();
-    let blocked = if sys().trim().is_empty() && chan().trim().is_empty() {
-        Some("Enter a system tag, a channel tag, or both.".to_owned())
-    } else if bad(&sys(), s) || bad(&chan(), c) {
-        Some("Tags are numbers from 0 to 999.".to_owned())
-    } else {
-        None
-    };
+    let blocked =
+        if favorite().trim().is_empty() && sys().trim().is_empty() && chan().trim().is_empty() {
+            Some("Enter a system tag, a channel tag, or both.".to_owned())
+        } else if bad(&favorite(), f) || bad(&sys(), s) || bad(&chan(), c) {
+            Some("Tags are numbers from 0 to 999.".to_owned())
+        } else {
+            None
+        };
 
     rsx! {
         section { id: "jump-tag", class: "panel",
             h2 { "Jump to tag" }
             div { class: "tune-row",
+                if hp {
+                    input {
+                        r#type: "text",
+                        placeholder: "Favorites tag",
+                        value: "{favorite}",
+                        oninput: move |e| favorite.set(e.value()),
+                        onfocus: move |_| typing.set(true),
+                        onblur: move |_| typing.set(false),
+                    }
+                }
                 input {
                     r#type: "text",
                     placeholder: "System tag",
@@ -143,7 +159,11 @@ pub fn JumpToTag() -> Element {
                 CapButton {
                     cap: Capability::JumpToTag,
                     blocked,
-                    onclick: move |()| run(Action::JumpToTag { sys: s, chan: c }),
+                    onclick: move |()| run(Action::JumpToTag {
+                        favorite: f,
+                        sys: s,
+                        chan: c,
+                    }),
                     "Jump"
                 }
             }
@@ -270,12 +290,23 @@ fn save_drawer(state: DrawerState) {
 pub fn BottomDrawer() -> Element {
     let mut state = use_signal(load_drawer);
     let open_log = *OPEN_LOG_REQUEST.read();
+    let open_spectrum = *OPEN_SPECTRUM_REQUEST.read();
     let toggle_drawer = *TOGGLE_DRAWER_REQUEST.read();
     use_effect(move || {
         if open_log > 0 {
             let next = DrawerState {
                 open: true,
                 tab: Tab::Log,
+            };
+            state.set(next);
+            save_drawer(next);
+        }
+    });
+    use_effect(move || {
+        if open_spectrum > 0 {
+            let next = DrawerState {
+                open: true,
+                tab: Tab::Spectrum,
             };
             state.set(next);
             save_drawer(next);

@@ -14,6 +14,8 @@ pub enum Family {
     EarlyComma,
     Gen1,
     Xt,
+    HomePatrol,
+    Sds,
 }
 
 /// One physical key exposed by the virtual remote.
@@ -81,6 +83,7 @@ pub enum Capability {
     Battery,
     WeatherAlert,
     PowerOff,
+    Record,
 }
 
 /// How (or whether) a model supports a capability.
@@ -119,6 +122,9 @@ pub struct ControlProfile {
     pub spectrum: bool,
     pub gps_status: bool,
     pub pwr_status: bool,
+    pub live_quick_keys: bool,
+    pub waterfall: bool,
+    pub recording: bool,
 }
 
 impl ControlProfile {
@@ -127,23 +133,50 @@ impl ControlProfile {
         use Capability::*;
         use Support::*;
         match cap {
-            SignalMeter if self.pwr_status => Native,
+            SignalMeter
+                if self.pwr_status || matches!(self.family, Family::HomePatrol | Family::Sds) =>
+            {
+                Native
+            }
             SignalMeter => Unsupported("This model has no PWR signal-meter command."),
-            Volume | Squelch | QuickTune => Native,
+            Volume if self.volume_range.is_some() => Native,
+            Volume => Unsupported("This model has no remote volume command."),
+            Squelch if self.squelch_range.is_some() => Native,
+            Squelch => Unsupported("This model has no remote squelch command."),
+            QuickTune => Native,
             ModeSwitch | ToneOut if self.family != Family::EarlyComma => Native,
             ModeSwitch | ToneOut => {
                 Unsupported("This model has no safe direct command for changing to that mode.")
             }
-            JumpToTag if self.family == Family::Xt => Native,
+            JumpToTag if matches!(self.family, Family::Xt | Family::HomePatrol | Family::Sds) => {
+                Native
+            }
             JumpToTag => Unsupported("Number tags are not supported by this model."),
-            Hold | StepNext | StepPrev | Avoid | ResumeScan | Mute => Emulated,
+            Hold | StepNext | StepPrev | Avoid | ResumeScan
+                if matches!(self.family, Family::HomePatrol | Family::Sds) =>
+            {
+                Native
+            }
+            Hold | StepNext | StepPrev | Avoid | ResumeScan => Emulated,
+            Mute if self.family == Family::Sds => Emulated,
+            Mute if self.family == Family::HomePatrol => {
+                Unsupported("HomePatrol-family scanners have no remote mute or volume command.")
+            }
+            Mute => Emulated,
+            QuickKeysSystems | QuickKeysGroups if self.live_quick_keys => Native,
             QuickKeysSystems | QuickKeysGroups => NeedsProgramMode,
+            HoldAtLevel if matches!(self.family, Family::HomePatrol | Family::Sds) => Native,
             HoldAtLevel => {
                 Unsupported("Only HomePatrol and SDS scanners can hold at a chosen level.")
             }
+            Discovery if matches!(self.family, Family::HomePatrol | Family::Sds) => {
+                Planned("Discovery session setup is not implemented yet.")
+            }
             Discovery => Unsupported("Discovery modes exist only on HomePatrol and SDS scanners."),
+            Waterfall if self.waterfall => Native,
             Waterfall => Unsupported("A waterfall is only available on SDS scanners."),
             Highway => Unsupported("Highway Patrol mode exists only on the BCT8."),
+            QuickKeysFavorites if self.live_quick_keys => Native,
             QuickKeysFavorites => {
                 Unsupported("Favorites Lists exist only on HomePatrol and SDS scanners.")
             }
@@ -156,6 +189,8 @@ impl ControlProfile {
             Battery if self.battery_status => Native,
             Battery => Unsupported("This mobile scanner has no battery status."),
             WeatherAlert => Native,
+            Record if self.recording => Native,
+            Record => Unsupported("This scanner has no user-record control."),
         }
     }
 }
@@ -432,6 +467,9 @@ pub fn xt_profile(model: &'static str, caps: &Capabilities, v: &XtVariant) -> Co
         spectrum: true,
         gps_status: !v.battery_status,
         pwr_status: true,
+        live_quick_keys: false,
+        waterfall: false,
+        recording: false,
     }
 }
 
@@ -462,6 +500,255 @@ pub fn comma_profile(
         spectrum,
         gps_status: false,
         pwr_status: family != Family::EarlyComma,
+        live_quick_keys: false,
+        waterfall: false,
+        recording: false,
+    }
+}
+
+const HP_HANDHELD_KEYS: [KeyDef; 25] = [
+    KeyDef {
+        code: "M",
+        label: "Menu",
+    },
+    KeyDef {
+        code: "F",
+        label: "Func",
+    },
+    KeyDef {
+        code: "L",
+        label: "Avoid",
+    },
+    KeyDef {
+        code: "0",
+        label: "0",
+    },
+    KeyDef {
+        code: "1",
+        label: "1",
+    },
+    KeyDef {
+        code: "2",
+        label: "2",
+    },
+    KeyDef {
+        code: "3",
+        label: "3",
+    },
+    KeyDef {
+        code: "4",
+        label: "4",
+    },
+    KeyDef {
+        code: "5",
+        label: "5",
+    },
+    KeyDef {
+        code: "6",
+        label: "6",
+    },
+    KeyDef {
+        code: "7",
+        label: "7",
+    },
+    KeyDef {
+        code: "8",
+        label: "8",
+    },
+    KeyDef {
+        code: "9",
+        label: "9",
+    },
+    KeyDef {
+        code: ".",
+        label: "./No",
+    },
+    KeyDef {
+        code: "E",
+        label: "E/Yes",
+    },
+    KeyDef {
+        code: ">",
+        label: "Rotary right",
+    },
+    KeyDef {
+        code: "<",
+        label: "Rotary left",
+    },
+    KeyDef {
+        code: "^",
+        label: "Rotary push",
+    },
+    KeyDef {
+        code: "V",
+        label: "Backlight",
+    },
+    KeyDef {
+        code: "Y",
+        label: "Replay",
+    },
+    KeyDef {
+        code: "A",
+        label: "System",
+    },
+    KeyDef {
+        code: "B",
+        label: "Department",
+    },
+    KeyDef {
+        code: "C",
+        label: "Channel",
+    },
+    KeyDef {
+        code: "Z",
+        label: "Zip",
+    },
+    KeyDef {
+        code: "R",
+        label: "Range",
+    },
+];
+
+const HP_MOBILE_KEYS: [KeyDef; 27] = [
+    KeyDef {
+        code: "M",
+        label: "Menu",
+    },
+    KeyDef {
+        code: "F",
+        label: "Rotary",
+    },
+    KeyDef {
+        code: "L",
+        label: "Avoid",
+    },
+    KeyDef {
+        code: "0",
+        label: "0",
+    },
+    KeyDef {
+        code: "1",
+        label: "1",
+    },
+    KeyDef {
+        code: "2",
+        label: "2",
+    },
+    KeyDef {
+        code: "3",
+        label: "3",
+    },
+    KeyDef {
+        code: "4",
+        label: "4",
+    },
+    KeyDef {
+        code: "5",
+        label: "5",
+    },
+    KeyDef {
+        code: "6",
+        label: "6",
+    },
+    KeyDef {
+        code: "7",
+        label: "7",
+    },
+    KeyDef {
+        code: "8",
+        label: "8",
+    },
+    KeyDef {
+        code: "9",
+        label: "9",
+    },
+    KeyDef {
+        code: ".",
+        label: "./No",
+    },
+    KeyDef {
+        code: "E",
+        label: "E/Yes",
+    },
+    KeyDef {
+        code: ">",
+        label: "Rotary right",
+    },
+    KeyDef {
+        code: "<",
+        label: "Rotary left",
+    },
+    KeyDef {
+        code: "^",
+        label: "Rotary push",
+    },
+    KeyDef {
+        code: "V",
+        label: "Volume",
+    },
+    KeyDef {
+        code: "Q",
+        label: "Squelch",
+    },
+    KeyDef {
+        code: "Y",
+        label: "Replay",
+    },
+    KeyDef {
+        code: "A",
+        label: "System",
+    },
+    KeyDef {
+        code: "B",
+        label: "Department",
+    },
+    KeyDef {
+        code: "C",
+        label: "Channel",
+    },
+    KeyDef {
+        code: "Z",
+        label: "Zip",
+    },
+    KeyDef {
+        code: "T",
+        label: "Service type",
+    },
+    KeyDef {
+        code: "R",
+        label: "Range",
+    },
+];
+
+/// HomePatrol/SDS live-control profile. These scanners expose their database as handles, not
+/// program-mode records, so database transfer remains outside the Scanner page.
+pub fn hp_profile(
+    model: &'static str,
+    caps: &Capabilities,
+    family: Family,
+    mobile: bool,
+) -> ControlProfile {
+    let sds = family == Family::Sds;
+    ControlProfile {
+        model,
+        volume_range: sds.then_some(if mobile { (0, 29) } else { (0, 15) }),
+        squelch_range: sds.then_some(if mobile { (0, 19) } else { (0, 15) }),
+        freq_ranges: caps.freq_ranges,
+        service_banks: &[],
+        power_off: sds,
+        family,
+        keymap: if mobile {
+            &HP_MOBILE_KEYS
+        } else {
+            &HP_HANDHELD_KEYS
+        },
+        battery_status: !mobile || sds,
+        spectrum: false,
+        gps_status: false,
+        pwr_status: false,
+        live_quick_keys: true,
+        waterfall: sds,
+        recording: true,
     }
 }
 
@@ -582,6 +869,14 @@ pub enum ScanMode {
     ToneOut,
 }
 
+/// HomePatrol/SDS hold depth.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HoldLevel {
+    System,
+    Department,
+    Channel,
+}
+
 /// The state of the scanner as far as the app can tell. `None` means the model cannot say.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct LiveState {
@@ -590,6 +885,18 @@ pub struct LiveState {
     pub system: Option<String>,
     pub group: Option<String>,
     pub channel: Option<String>,
+    pub favorite: Option<String>,
+    pub favorite_index: Option<u32>,
+    pub system_index: Option<u32>,
+    pub department_index: Option<u32>,
+    pub channel_index: Option<u32>,
+    pub favorite_qk: Option<u8>,
+    pub system_qk: Option<u8>,
+    pub department_qk: Option<u8>,
+    pub channel_target: Option<&'static str>,
+    pub system_held: bool,
+    pub department_held: bool,
+    pub channel_held: bool,
     pub freq_hz: Option<u64>,
     /// Talkgroup ID when the scanner reports one instead of a frequency.
     pub tgid: Option<String>,
@@ -605,6 +912,7 @@ pub struct LiveState {
     pub squelch: Option<u8>,
     /// App-tracked: mute is emulated with volume 0.
     pub muted: bool,
+    pub recording: bool,
 }
 
 /// Non-empty trimmed text, or `None`.
@@ -703,10 +1011,12 @@ pub fn bars_from_rssi(rssi: u16) -> u8 {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
     Hold,
+    HoldLevel(HoldLevel),
     ResumeScan,
     StepNext,
     StepPrev,
     Avoid,
+    AvoidPermanent,
     SetVolume(u8),
     SetSquelch(u8),
     /// Handled by the session (it needs the volume to restore); never reaches [`commands`].
@@ -717,10 +1027,12 @@ pub enum Action {
         modulation: Option<String>,
     },
     JumpToTag {
+        favorite: Option<u16>,
         sys: Option<u16>,
         chan: Option<u16>,
     },
     PowerOff,
+    SetRecord(bool),
 }
 
 impl Action {
@@ -728,10 +1040,12 @@ impl Action {
     pub fn label(&self) -> &'static str {
         match self {
             Action::Hold => "Hold",
+            Action::HoldLevel(_) => "Hold",
             Action::ResumeScan => "Scan",
             Action::StepNext => "Next",
             Action::StepPrev => "Previous",
             Action::Avoid => "Avoid",
+            Action::AvoidPermanent => "Permanent avoid",
             Action::SetVolume(_) => "Volume",
             Action::SetSquelch(_) => "Squelch",
             Action::SetMute(_) => "Mute",
@@ -739,18 +1053,119 @@ impl Action {
             Action::QuickTune { .. } => "Quick tune",
             Action::JumpToTag { .. } => "Jump to tag",
             Action::PowerOff => "Power off",
+            Action::SetRecord(_) => "Record",
+        }
+    }
+}
+
+fn hp_target(
+    state: &LiveState,
+    level: HoldLevel,
+) -> Result<(&'static str, u32, Option<u32>), String> {
+    match level {
+        HoldLevel::System => Ok((
+            "SYS",
+            state
+                .system_index
+                .ok_or("No current system handle is available.")?,
+            None,
+        )),
+        HoldLevel::Department => Ok((
+            "DEPT",
+            state
+                .department_index
+                .ok_or("No current department handle is available.")?,
+            state.system_index,
+        )),
+        HoldLevel::Channel => {
+            let target = state
+                .channel_target
+                .ok_or("No current channel target is available.")?;
+            let first = if matches!(target, "QS_FREQ" | "CS_FREQ" | "SWS_FREQ") {
+                u32::try_from(state.freq_hz.ok_or("No current frequency is available.")? / 100)
+                    .map_err(|_| "Current frequency is out of range.")?
+            } else {
+                state
+                    .channel_index
+                    .ok_or("No current channel handle is available.")?
+            };
+            let second = match target {
+                "DEPT" => state.system_index,
+                "SWS_FREQ" => state.department_index,
+                _ => None,
+            };
+            Ok((target, first, second))
         }
     }
 }
 
 /// The wire commands (in order) that carry out `action` on this model, or a user-facing reason it can't.
-pub fn commands(action: &Action, profile: &ControlProfile) -> Result<Vec<String>, String> {
+pub fn commands(
+    action: &Action,
+    profile: &ControlProfile,
+    state: &LiveState,
+) -> Result<Vec<String>, String> {
     // SPEC: KEY,<code>,<mode>; H hold, S scan, L lockout, < and > step (VFO left/right).
     let key = |c: char| vec![format!("KEY,{c},P")];
+    let hp = matches!(profile.family, Family::HomePatrol | Family::Sds);
+    let target_command = |command: &str, level: HoldLevel, suffix: &str| {
+        let (target, first, second) = hp_target(state, level)?;
+        Ok::<_, String>(vec![format!(
+            "{command},{target},{first},{}{suffix}",
+            second.map(|value| value.to_string()).unwrap_or_default()
+        )])
+    };
+    let avoid_command = |status: u8| {
+        let target = state
+            .channel_target
+            .ok_or("No current channel target is available.")?;
+        let (target, first, second) = match target {
+            "CFREQ" | "TGID" | "CCHIT" => (
+                target,
+                state
+                    .channel_index
+                    .ok_or("No current channel handle is available.")?,
+                None,
+            ),
+            "QS_FREQ" | "CS_FREQ" | "SWS_FREQ" => (
+                "AFREQ",
+                u32::try_from(state.freq_hz.ok_or("No current frequency is available.")? / 100)
+                    .map_err(|_| "Current frequency is out of range.")?,
+                None,
+            ),
+            "STGID" => (
+                "ATGID",
+                state
+                    .tgid
+                    .as_deref()
+                    .and_then(|value| value.parse().ok())
+                    .ok_or("No current talkgroup ID is available.")?,
+                state.system_index,
+            ),
+            _ => return Err("The current item cannot be avoided remotely.".into()),
+        };
+        Ok::<_, String>(vec![format!(
+            "AVD,{target},{first},{},{status}",
+            second.map(|value| value.to_string()).unwrap_or_default()
+        )])
+    };
     Ok(match action {
+        Action::Hold if hp => target_command("HLD", HoldLevel::Channel, "")?,
+        Action::HoldLevel(level) if hp => target_command("HLD", *level, "")?,
+        Action::HoldLevel(_) => return Err("Hold levels are not supported by this model.".into()),
         Action::Hold => key('H'),
+        Action::ResumeScan | Action::JumpMode(ScanMode::Scan) if hp => {
+            vec!["JPM,SCN_MODE,FFFFFFFF".into()]
+        }
         Action::ResumeScan | Action::JumpMode(ScanMode::Scan) => key('S'),
+        Action::Avoid if hp => avoid_command(2)?,
+        Action::AvoidPermanent if hp => avoid_command(1)?,
+        Action::AvoidPermanent => {
+            return Err("Permanent avoid is not supported by this model.".into());
+        }
         Action::Avoid => key('L'),
+        Action::StepNext if hp => target_command("NXT", HoldLevel::Channel, ",1")?,
+        Action::StepPrev if hp => target_command("PRV", HoldLevel::Channel, ",1")?,
         Action::StepNext => key('>'),
         Action::StepPrev => key('<'),
         Action::SetVolume(v) => {
@@ -768,6 +1183,9 @@ pub fn commands(action: &Action, profile: &ControlProfile) -> Result<Vec<String>
         Action::SetMute(_) => return Err("Mute is handled by the session.".into()),
         Action::JumpMode(_) if profile.family == Family::EarlyComma => {
             return Err("This model's mode changes require physical-key sequences that are not safely automatable.".into());
+        }
+        Action::JumpMode(ScanMode::Service(_)) if hp => {
+            return Err("This family has no direct Service Scan jump command.".into());
         }
         Action::JumpMode(ScanMode::Service(bank)) => vec![format!("JPM,SVC_MODE,{bank}")],
         Action::JumpMode(ScanMode::Custom) => vec!["JPM,CTM_MODE,RESERVE".into()],
@@ -793,28 +1211,57 @@ pub fn commands(action: &Action, profile: &ControlProfile) -> Result<Vec<String>
                     profile.model
                 ));
             }
-            // SPEC: QSH,<FRQ>,<RSV>,<MOD>; empty fields keep the scanner's current options.
+            if hp {
+                return Ok(vec![format!("QSH,{wire:08}")]);
+            }
+            // SPEC: XT/P2 QSH includes reserved/modulation fields.
             let modulation = modulation.as_deref().filter(|m| *m != "AUTO").unwrap_or("");
             vec![format!("QSH,{wire:08},,{modulation}")]
         }
-        Action::JumpToTag { sys, chan } => {
-            if profile.family != Family::Xt {
+        Action::JumpToTag {
+            favorite,
+            sys,
+            chan,
+        } => {
+            if !matches!(
+                profile.family,
+                Family::Xt | Family::HomePatrol | Family::Sds
+            ) {
                 return Err("Number tags are not supported by this model.".into());
             }
-            if sys.is_none() && chan.is_none() {
+            if favorite.is_none() && sys.is_none() && chan.is_none() {
                 return Err("Enter a system tag, a channel tag, or both.".into());
             }
-            if sys.is_some_and(|t| t > 999) || chan.is_some_and(|t| t > 999) {
+            if favorite.is_some_and(|tag| tag > 99)
+                || (hp && sys.is_some_and(|tag| tag > 99))
+                || (!hp && sys.is_some_and(|tag| tag > 999))
+                || chan.is_some_and(|tag| tag > 999)
+            {
                 return Err("Number tags are 0–999.".into());
             }
             let field = |t: &Option<u16>| t.map(|t| t.to_string()).unwrap_or_default();
-            vec![format!("JNT,{},{}", field(sys), field(chan))]
+            if hp {
+                vec![format!(
+                    "JNT,{},{},{}",
+                    field(favorite),
+                    field(sys),
+                    field(chan)
+                )]
+            } else {
+                vec![format!("JNT,{},{}", field(sys), field(chan))]
+            }
         }
         Action::PowerOff => {
             if !profile.power_off {
                 return Err("This model has no remote power-off command.".into());
             }
             vec!["POF".into()]
+        }
+        Action::SetRecord(recording) => {
+            if !profile.recording {
+                return Err("This model has no user-record control.".into());
+            }
+            vec![format!("URC,{}", u8::from(*recording))]
         }
     })
 }
@@ -1001,7 +1448,8 @@ mod tests {
     #[test]
     fn translates_actions() {
         let p = profile();
-        let one = |a: Action| commands(&a, &p).unwrap();
+        let state = LiveState::default();
+        let one = |a: Action| commands(&a, &p, &state).unwrap();
         assert_eq!(one(Action::Hold), ["KEY,H,P"]);
         assert_eq!(one(Action::StepNext), ["KEY,>,P"]);
         assert_eq!(one(Action::JumpMode(ScanMode::Scan)), ["KEY,S,P"]);
@@ -1016,6 +1464,7 @@ mod tests {
         assert_eq!(one(Action::SetVolume(99)), ["VOL,15"]);
         assert_eq!(
             one(Action::JumpToTag {
+                favorite: None,
                 sys: Some(12),
                 chan: None
             }),
@@ -1023,6 +1472,7 @@ mod tests {
         );
         assert_eq!(
             one(Action::JumpToTag {
+                favorite: None,
                 sys: None,
                 chan: Some(3)
             }),
@@ -1044,41 +1494,86 @@ mod tests {
         );
     }
 
+    #[test]
+    fn translates_homepatrol_native_actions() {
+        let profile = models::find("SDS100").unwrap().control_profile().unwrap();
+        let state = LiveState {
+            system_index: Some(10),
+            department_index: Some(20),
+            channel_index: Some(30),
+            channel_target: Some("CFREQ"),
+            freq_hz: Some(155_250_000),
+            ..LiveState::default()
+        };
+        let one = |action| commands(&action, &profile, &state).unwrap();
+        assert_eq!(one(Action::HoldLevel(HoldLevel::System)), ["HLD,SYS,10,"]);
+        assert_eq!(
+            one(Action::HoldLevel(HoldLevel::Department)),
+            ["HLD,DEPT,20,10"]
+        );
+        assert_eq!(one(Action::StepNext), ["NXT,CFREQ,30,,1"]);
+        assert_eq!(one(Action::Avoid), ["AVD,CFREQ,30,,2"]);
+        assert_eq!(one(Action::AvoidPermanent), ["AVD,CFREQ,30,,1"]);
+        assert_eq!(one(Action::ResumeScan), ["JPM,SCN_MODE,FFFFFFFF"]);
+        assert_eq!(one(Action::SetRecord(true)), ["URC,1"]);
+        assert_eq!(
+            one(Action::JumpToTag {
+                favorite: Some(1),
+                sys: Some(2),
+                chan: Some(3),
+            }),
+            ["JNT,1,2,3"]
+        );
+        assert_eq!(
+            one(Action::QuickTune {
+                freq_hz: 155_250_000,
+                modulation: None,
+            }),
+            ["QSH,01552500"]
+        );
+    }
+
     /// Bad input is refused with a reason instead of being sent.
     #[test]
     fn refuses_bad_input() {
         let p = profile();
+        let state = LiveState::default();
         assert!(
             commands(
                 &Action::QuickTune {
                     freq_hz: 600_000_000,
                     modulation: None
                 },
-                &p
+                &p,
+                &state
             )
             .is_err()
         );
         assert!(
             commands(
                 &Action::JumpToTag {
+                    favorite: None,
                     sys: None,
                     chan: None
                 },
-                &p
+                &p,
+                &state
             )
             .is_err()
         );
         assert!(
             commands(
                 &Action::JumpToTag {
+                    favorite: None,
                     sys: Some(1000),
                     chan: None
                 },
-                &p
+                &p,
+                &state
             )
             .is_err()
         );
-        assert!(commands(&Action::SetMute(true), &p).is_err());
+        assert!(commands(&Action::SetMute(true), &p, &state).is_err());
     }
 
     /// Each model has a profile, and the BC346XT lacks the Military Air bank.
@@ -1110,7 +1605,8 @@ mod tests {
         assert!(
             commands(
                 &Action::PowerOff,
-                &models::find("BCD996P2").unwrap().control_profile().unwrap()
+                &models::find("BCD996P2").unwrap().control_profile().unwrap(),
+                &LiveState::default()
             )
             .is_err()
         );

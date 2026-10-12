@@ -12,7 +12,19 @@ use std::str::FromStr; // FromStr impls parse the wire format back
 
 /// Handle to a record in the scanner's memory pool (1 to about 45000).
 /// "-1" on the wire (end of list / none) is represented as Option::None.
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
+#[derive(
+    serde::Serialize,
+    serde::Deserialize,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    Default,
+)]
 pub struct Index(pub u16);
 
 impl fmt::Display for Index {
@@ -33,7 +45,9 @@ pub struct Links {
 }
 
 /// Frequency in units of 100 Hz, as the scanner stores it.
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord,
+)]
 pub struct Freq(pub u32);
 
 impl Freq {
@@ -311,7 +325,12 @@ impl FromStr for NumberTag {
     fn from_str(s: &str) -> Result<Self, ()> {
         match s {
             "NONE" => Ok(NumberTag::Unassigned),
-            n => n.parse().ok().filter(|&v| v <= 999).map(NumberTag::Tag).ok_or(()),
+            n => n
+                .parse()
+                .ok()
+                .filter(|&v| v <= 999)
+                .map(NumberTag::Tag)
+                .ok_or(()),
         }
     }
 }
@@ -395,8 +414,12 @@ impl ToneCode {
         match self.0 {
             0 => Tone::Off,
             127 => Tone::Search,
-            c @ 64..=113 => Tone::Ctcss { tenths_hz: CTCSS_TENTHS_HZ[(c - 64) as usize] },
-            c => Tone::Dcs { code: DCS_LABELS[(c - 128) as usize] }, // from_wire guarantees 128-239
+            c @ 64..=113 => Tone::Ctcss {
+                tenths_hz: CTCSS_TENTHS_HZ[(c - 64) as usize],
+            },
+            c => Tone::Dcs {
+                code: DCS_LABELS[(c - 128) as usize],
+            }, // from_wire guarantees 128-239
         }
     }
 
@@ -471,7 +494,12 @@ impl FromStr for ColorCodeSetting {
     fn from_str(s: &str) -> Result<Self, ()> {
         match s {
             "SRCH" => Ok(ColorCodeSetting::Search),
-            n => n.parse().ok().filter(|&c| c <= 15).map(ColorCodeSetting::Code).ok_or(()),
+            n => n
+                .parse()
+                .ok()
+                .filter(|&c| c <= 15)
+                .map(ColorCodeSetting::Code)
+                .ok_or(()),
         }
     }
 }
@@ -498,9 +526,8 @@ pub struct Dms {
 impl Dms {
     /// Signed decimal degrees, handy for maps and distance math.
     pub fn to_decimal(self) -> f64 {
-        let v = self.degrees as f64
-            + self.minutes as f64 / 60.0
-            + self.centiseconds as f64 / 360_000.0; // hundredths of a second per degree
+        let v =
+            self.degrees as f64 + self.minutes as f64 / 60.0 + self.centiseconds as f64 / 360_000.0; // hundredths of a second per degree
         if self.positive { v } else { -v }
     }
 
@@ -522,13 +549,32 @@ impl Dms {
         if minutes > 59 || centiseconds > 5999 {
             return None;
         }
-        Some(Dms { degrees, minutes, centiseconds, positive })
+        Some(Dms {
+            degrees,
+            minutes,
+            centiseconds,
+            positive,
+        })
     }
 
     /// Write degrees/minutes/seconds at the requested width and with its hemisphere.
-    fn write(&self, f: &mut fmt::Formatter<'_>, deg_digits: usize, pos: char, neg: char) -> fmt::Result {
+    fn write(
+        &self,
+        f: &mut fmt::Formatter<'_>,
+        deg_digits: usize,
+        pos: char,
+        neg: char,
+    ) -> fmt::Result {
         let hemi = if self.positive { pos } else { neg };
-        write!(f, "{:0w$}{:02}{:04}{}", self.degrees, self.minutes, self.centiseconds, hemi, w = deg_digits)
+        write!(
+            f,
+            "{:0w$}{:02}{:04}{}",
+            self.degrees,
+            self.minutes,
+            self.centiseconds,
+            hemi,
+            w = deg_digits
+        )
     }
 }
 
@@ -540,7 +586,10 @@ impl FromStr for Latitude {
     type Err = ();
     /// Parse fixed-width latitude and reject values beyond either pole.
     fn from_str(s: &str) -> Result<Self, ()> {
-        Dms::parse(s, 2, 'N', 'S').filter(|d| d.degrees <= 90).map(Latitude).ok_or(())
+        Dms::parse(s, 2, 'N', 'S')
+            .filter(|d| d.degrees <= 90)
+            .map(Latitude)
+            .ok_or(())
     }
 }
 
@@ -559,7 +608,10 @@ impl FromStr for Longitude {
     type Err = ();
     /// Parse fixed-width longitude and reject values beyond the antimeridian.
     fn from_str(s: &str) -> Result<Self, ()> {
-        Dms::parse(s, 3, 'E', 'W').filter(|d| d.degrees <= 180).map(Longitude).ok_or(())
+        Dms::parse(s, 3, 'E', 'W')
+            .filter(|d| d.degrees <= 180)
+            .map(Longitude)
+            .ok_or(())
     }
 }
 
@@ -620,10 +672,10 @@ pub struct TrunkRecord {
     pub id_search: Option<bool>,  // false = ID Scan, true = ID Search
     pub status_bit: Option<bool>, // Motorola status bit
     pub end_code: Option<EndCode>,
-    pub afs: Option<bool>,             // EDACS ID format: false decimal, true AFS
-    pub emergency_alert: Option<u8>,   // 0 ignore, 1-9 tone
-    pub emergency_level: Option<u8>,   // 0 off, 1-15
-    pub fleet_map: Option<u8>,         // 0-15 preset, 16 custom
+    pub afs: Option<bool>,           // EDACS ID format: false decimal, true AFS
+    pub emergency_alert: Option<u8>, // 0 ignore, 1-9 tone
+    pub emergency_level: Option<u8>, // 0 off, 1-15
+    pub fleet_map: Option<u8>,       // 0-15 preset, 16 custom
     pub custom_fleet_map: Option<String>, // 8 size codes, 0-E each
     pub tgid_group_head: Option<Index>,
     pub tgid_group_tail: Option<Index>,
@@ -696,7 +748,7 @@ pub struct TrunkFreqRecord {
     pub system: Option<Index>,
     pub site: Option<Index>, // the spec calls this GRP_INDEX, but it is the parent site
     pub number_tag: Option<NumberTag>, // EDACS SCAT only
-    pub vol_offset: Option<i8>,        // EDACS SCAT only
+    pub vol_offset: Option<i8>, // EDACS SCAT only
     pub color_code: Option<ColorCodeSetting>,
 }
 
@@ -771,7 +823,7 @@ pub struct LocationAlertRecord {
     pub seq_no: Option<u16>,
     pub geofence: GeoFence, // range here is 1-80 in 0.05 mile/km units; enabled is unused
     pub speed_limit: Option<u8>, // 0-200 mph or km/h
-    pub heading: Option<u16>,    // degrees; 360 = any direction
+    pub heading: Option<u16>, // degrees; 360 = any direction
     pub alert_color: Option<AlertColor>,
     pub alert_pattern: Option<AlertPattern>,
 }
@@ -792,7 +844,9 @@ pub struct ScanDatabase {
 pub const FORMAT_VERSION: u32 = 1;
 
 /// Stable identity of a system, independent of its position or scanner index.
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
+#[derive(
+    serde::Serialize, serde::Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default, Hash,
+)]
 pub struct Uid(pub u64);
 
 impl Uid {
@@ -850,7 +904,9 @@ impl ScanDatabase {
             if legacy {
                 if let Some(model) = &self.model {
                     sys.provenance = Provenance {
-                        source: Source::Scanner { model: model.clone() },
+                        source: Source::Scanner {
+                            model: model.clone(),
+                        },
                         external_id: None,
                         baseline: Some(sys.content_hash()),
                     };
@@ -876,7 +932,11 @@ impl ScanDatabase {
                 SystemKind::Conventional { groups } => {
                     channels += groups.iter().map(|g| g.channels.len()).sum::<usize>();
                 }
-                SystemKind::Trunked { sites: st, tgid_groups, .. } => {
+                SystemKind::Trunked {
+                    sites: st,
+                    tgid_groups,
+                    ..
+                } => {
                     sites += st.len();
                     channels += tgid_groups.iter().map(|g| g.tgids.len()).sum::<usize>();
                 }
@@ -895,7 +955,9 @@ impl ScanDatabase {
                     SystemKind::Conventional { groups } => {
                         groups.iter().map(|g| 1 + g.channels.len()).sum::<usize>()
                     }
-                    SystemKind::Trunked { sites, tgid_groups, .. } => {
+                    SystemKind::Trunked {
+                        sites, tgid_groups, ..
+                    } => {
                         sites.iter().map(|s| 1 + s.frequencies.len()).sum::<usize>()
                             + tgid_groups.iter().map(|g| 1 + g.tgids.len()).sum::<usize>()
                     }
@@ -929,14 +991,13 @@ impl ScanDatabase {
         true
     }
 
-
     /// Check the database against the rules the scanner enforces.
     /// Returns every problem found; an empty list means valid.
-    /// 
+    ///
     /// # All Validation Steps:
-    /// - Up to 500 systems, 
-    /// - 1,000 total sites (max 256 per system), 
-    /// - 20 groups per system, and 
+    /// - Up to 500 systems,
+    /// - 1,000 total sites (max 256 per system),
+    /// - 20 groups per system, and
     /// - 25,000 channels (500 max IDs or 1,000 frequencies per system)
     pub fn validate(&self) -> Vec<ValidationError> {
         // Keep collecting problems instead of stopping at the first one, so the user can fix them together.
@@ -950,7 +1011,11 @@ impl ScanDatabase {
             // Validate the system's quick key for duplicates.
             if let Some(KeyAssignment::Key(k)) = sys.info.quick_key {
                 if let Some(&first) = quick_keys.get(&k) {
-                    errors.push(ValidationError::DuplicateSystemQuickKey { key: k, first, duplicate: i });
+                    errors.push(ValidationError::DuplicateSystemQuickKey {
+                        key: k,
+                        first,
+                        duplicate: i,
+                    });
                 } else {
                     quick_keys.insert(k, i);
                 }
@@ -959,7 +1024,11 @@ impl ScanDatabase {
             // Validate the system's start key for duplicates.
             if let Some(KeyAssignment::Key(k)) = sys.info.start_key {
                 if let Some(&first) = start_keys.get(&k) {
-                    errors.push(ValidationError::DuplicateStartupKey { key: k, first, duplicate: i });
+                    errors.push(ValidationError::DuplicateStartupKey {
+                        key: k,
+                        first,
+                        duplicate: i,
+                    });
                 } else {
                     start_keys.insert(k, i);
                 }
@@ -967,8 +1036,12 @@ impl ScanDatabase {
 
             // Validate the group's quick keys for duplicates.
             let group_keys: Vec<Option<KeyAssignment>> = match &sys.kind {
-                SystemKind::Conventional { groups } => groups.iter().map(|g| g.info.quick_key).collect(),
-                SystemKind::Trunked { tgid_groups, .. } => tgid_groups.iter().map(|g| g.info.quick_key).collect(),
+                SystemKind::Conventional { groups } => {
+                    groups.iter().map(|g| g.info.quick_key).collect()
+                }
+                SystemKind::Trunked { tgid_groups, .. } => {
+                    tgid_groups.iter().map(|g| g.info.quick_key).collect()
+                }
             };
 
             // Track seen group quick keys to detect duplicates.
@@ -977,7 +1050,12 @@ impl ScanDatabase {
             for (g, key) in group_keys.into_iter().enumerate() {
                 if let Some(KeyAssignment::Key(k)) = key {
                     if let Some(&first) = seen.get(&k) {
-                        errors.push(ValidationError::DuplicateGroupQuickKey { system: i, key: k, first, duplicate: g });
+                        errors.push(ValidationError::DuplicateGroupQuickKey {
+                            system: i,
+                            key: k,
+                            first,
+                            duplicate: g,
+                        });
                     } else {
                         seen.insert(k, g);
                     }
@@ -1017,7 +1095,9 @@ impl ScanDatabase {
                     }
                 }
                 // Validate the names of sites and talkgroup groups for trunked systems.
-                SystemKind::Trunked { sites, tgid_groups, .. } => {
+                SystemKind::Trunked {
+                    sites, tgid_groups, ..
+                } => {
                     // for each site, validate its name.
                     for (s, site) in sites.iter().enumerate() {
                         if !Self::validate_name(site.info.name.as_str()) {
@@ -1056,7 +1136,7 @@ impl ScanDatabase {
     }
 
     /// Make a new placeholder database.
-    /// 
+    ///
     /// The database is initialized with one system, one group, and one channel, all placeholder entries.
     pub fn new_placeholder() -> Self {
         Self {
@@ -1086,43 +1166,144 @@ impl ScanDatabase {
 /// indices into the database's system list and the system's group list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ValidationError {
-    DuplicateSystemQuickKey { key: u8, first: usize, duplicate: usize },
-    DuplicateStartupKey { key: u8, first: usize, duplicate: usize },
-    DuplicateGroupQuickKey { system: usize, key: u8, first: usize, duplicate: usize },
-    InvalidSystemName { system: usize, name: String },
-    InvalidGroupName { system: usize, group: usize, name: String },
-    InvalidChannelName { system: usize, group: usize, channel: usize, name: String },
-    InvalidSiteName { system: usize, site: usize, name: String },
-    InvalidTalkgroupGroupName { system: usize, group: usize, name: String },
-    InvalidTalkgroupName { system: usize, group: usize, talkgroup: usize, name: String },
+    DuplicateSystemQuickKey {
+        key: u8,
+        first: usize,
+        duplicate: usize,
+    },
+    DuplicateStartupKey {
+        key: u8,
+        first: usize,
+        duplicate: usize,
+    },
+    DuplicateGroupQuickKey {
+        system: usize,
+        key: u8,
+        first: usize,
+        duplicate: usize,
+    },
+    InvalidSystemName {
+        system: usize,
+        name: String,
+    },
+    InvalidGroupName {
+        system: usize,
+        group: usize,
+        name: String,
+    },
+    InvalidChannelName {
+        system: usize,
+        group: usize,
+        channel: usize,
+        name: String,
+    },
+    InvalidSiteName {
+        system: usize,
+        site: usize,
+        name: String,
+    },
+    InvalidTalkgroupGroupName {
+        system: usize,
+        group: usize,
+        name: String,
+    },
+    InvalidTalkgroupName {
+        system: usize,
+        group: usize,
+        talkgroup: usize,
+        name: String,
+    },
 }
 
 impl fmt::Display for ValidationError {
     /// Turn a validation problem into a short message for the user.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::DuplicateSystemQuickKey { key, first, duplicate } => write!(
-                f, "Systems {} and {} both use quick key {key}", first + 1, duplicate + 1),
-            Self::DuplicateStartupKey { key, first, duplicate } => write!(
-                f, "Systems {} and {} both use startup key {key}", first + 1, duplicate + 1),
-            Self::DuplicateGroupQuickKey { system, key, first, duplicate } => write!(
-                f, "In system {}, groups {} and {} both use quick key {key}",
-                system + 1, first + 1, duplicate + 1),
-            Self::InvalidSystemName { system, name } => write!(
-                f, "System {} has invalid name {name:?}", system + 1),
-            Self::InvalidGroupName { system, group, name } => write!(
-                f, "Group {} in system {} has invalid name {name:?}", group + 1, system + 1),
-            Self::InvalidChannelName { system, group, channel, name } => write!(
-                f, "Channel {} in group {} of system {} has invalid name {name:?}",
-                channel + 1, group + 1, system + 1),
+            Self::DuplicateSystemQuickKey {
+                key,
+                first,
+                duplicate,
+            } => write!(
+                f,
+                "Systems {} and {} both use quick key {key}",
+                first + 1,
+                duplicate + 1
+            ),
+            Self::DuplicateStartupKey {
+                key,
+                first,
+                duplicate,
+            } => write!(
+                f,
+                "Systems {} and {} both use startup key {key}",
+                first + 1,
+                duplicate + 1
+            ),
+            Self::DuplicateGroupQuickKey {
+                system,
+                key,
+                first,
+                duplicate,
+            } => write!(
+                f,
+                "In system {}, groups {} and {} both use quick key {key}",
+                system + 1,
+                first + 1,
+                duplicate + 1
+            ),
+            Self::InvalidSystemName { system, name } => {
+                write!(f, "System {} has invalid name {name:?}", system + 1)
+            }
+            Self::InvalidGroupName {
+                system,
+                group,
+                name,
+            } => write!(
+                f,
+                "Group {} in system {} has invalid name {name:?}",
+                group + 1,
+                system + 1
+            ),
+            Self::InvalidChannelName {
+                system,
+                group,
+                channel,
+                name,
+            } => write!(
+                f,
+                "Channel {} in group {} of system {} has invalid name {name:?}",
+                channel + 1,
+                group + 1,
+                system + 1
+            ),
             Self::InvalidSiteName { system, site, name } => write!(
-                f, "Site {} in system {} has invalid name {name:?}", site + 1, system + 1),
-            Self::InvalidTalkgroupGroupName { system, group, name } => write!(
-                f, "Talkgroup group {} in system {} has invalid name {name:?}",
-                group + 1, system + 1),
-            Self::InvalidTalkgroupName { system, group, talkgroup, name } => write!(
-                f, "Talkgroup {} in group {} of system {} has invalid name {name:?}",
-                talkgroup + 1, group + 1, system + 1),
+                f,
+                "Site {} in system {} has invalid name {name:?}",
+                site + 1,
+                system + 1
+            ),
+            Self::InvalidTalkgroupGroupName {
+                system,
+                group,
+                name,
+            } => write!(
+                f,
+                "Talkgroup group {} in system {} has invalid name {name:?}",
+                group + 1,
+                system + 1
+            ),
+            Self::InvalidTalkgroupName {
+                system,
+                group,
+                talkgroup,
+                name,
+            } => write!(
+                f,
+                "Talkgroup {} in group {} of system {} has invalid name {name:?}",
+                talkgroup + 1,
+                group + 1,
+                system + 1
+            ),
         }
     }
 }
@@ -1172,7 +1353,11 @@ impl System {
                     }
                 }
             }
-            SystemKind::Trunked { trunk, sites, tgid_groups } => {
+            SystemKind::Trunked {
+                trunk,
+                sites,
+                tgid_groups,
+            } => {
                 trunk.tgid_group_head = None;
                 trunk.tgid_group_tail = None;
                 trunk.lockout_group_head = None;
@@ -1209,7 +1394,9 @@ impl System {
     /// Hash of [`System::content`] (FNV-1a over its debug text, so it is stable across runs).
     pub fn content_hash(&self) -> u64 {
         let text = format!("{:?}", self.content());
-        text.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3))
+        text.bytes().fold(0xcbf2_9ce4_8422_2325, |h, b| {
+            (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+        })
     }
 
     /// True if this system was edited after it was imported (user-made systems always count).
@@ -1306,7 +1493,12 @@ mod tests {
         assert_eq!(db.format_version, FORMAT_VERSION);
         let sys = &db.systems[0];
         assert_ne!(sys.uid, Uid::default());
-        assert_eq!(sys.provenance.source, Source::Scanner { model: "BCD325P2".into() });
+        assert_eq!(
+            sys.provenance.source,
+            Source::Scanner {
+                model: "BCD325P2".into()
+            }
+        );
         assert!(!sys.is_locally_modified());
     }
 
@@ -1341,8 +1533,13 @@ mod tests {
     #[test]
     fn real_download_fixture_round_trips() {
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("working");
-        let Ok(entries) = std::fs::read_dir(dir) else { return };
-        for entry in entries.flatten().filter(|e| e.path().extension().is_some_and(|x| x == "ron")) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries
+            .flatten()
+            .filter(|e| e.path().extension().is_some_and(|x| x == "ron"))
+        {
             let text = std::fs::read_to_string(entry.path()).unwrap();
             let mut db: ScanDatabase = ron::from_str(&text).unwrap();
             db.migrate();

@@ -1,16 +1,18 @@
-use dioxus::prelude::*;
 use crate::confirm::confirm;
+use dioxus::prelude::*;
 use std::fmt::Display;
 use std::str::FromStr;
 
 use crate::database::{
-    NumberTag,
-    BandPlan, Channel, ChannelGroup, Freq, GroupRecord, GroupType, KeyAssignment, Modulation, Name, ScanDatabase, Site, System,
-    SystemKind, SystemRecord, SiteRecord, TgidRecord, ChannelRecord, SystemType, TgidEntry, TgidGroup, TrunkFreq, TrunkRecord
+    BandPlan, Channel, ChannelGroup, ChannelRecord, Freq, GroupRecord, GroupType, KeyAssignment,
+    Modulation, Name, NumberTag, ScanDatabase, Site, SiteRecord, System, SystemKind, SystemRecord,
+    SystemType, TgidEntry, TgidGroup, TgidRecord, TrunkFreq, TrunkRecord,
 };
-use crate::messages::{push_message, MessageKind};
+use crate::messages::{MessageKind, push_message};
 use crate::models::{self, CompatReport};
-use crate::scanner_interaction::{connected_model, target_model, CHOSEN_MODEL, SCAN_DATABASE, VALIDATION};
+use crate::scanner_interaction::{
+    CHOSEN_MODEL, SCAN_DATABASE, VALIDATION, connected_model, target_model,
+};
 
 /// Pencil icon used by the inline edit controls.
 const EDIT_ICON: Asset = asset!("/assets/icons/icons8-edit-pencil-24.svg");
@@ -19,13 +21,13 @@ const EDIT_ICON: Asset = asset!("/assets/icons/icons8-edit-pencil-24.svg");
 // Text that does not parse leaves the original value in place.
 
 /// Optional value to string. Empty if `None`.
-/// 
+///
 /// # Arguments
 /// * `v` - The optional value to convert to a string.
 ///
 /// # Returns
 /// A string representation of the value, or an empty string if `None`.
-/// 
+///
 /// # Examples
 /// ```
 /// let v: Option<i32> = Some(42);
@@ -38,17 +40,17 @@ fn opt_string<T: Display>(v: &Option<T>) -> String {
 }
 
 /// Commits an optional value from a draft string.
-/// 
-/// In other words, it attempts to parse the draft string into a value of type `T`. 
+///
+/// In other words, it attempts to parse the draft string into a value of type `T`.
 /// If parsing fails, it falls back to the original value.
-/// 
+///
 /// # Arguments
 /// * `draft` - The draft string to parse.
 /// * `orig` - The original optional value.
 ///
 /// # Returns
 /// The parsed value if successful, or the original value if parsing fails.
-/// 
+///
 /// # Examples
 /// ```
 /// let orig: Option<i32> = Some(42);
@@ -64,13 +66,13 @@ fn commit_opt<T: FromStr + Clone>(draft: &str, orig: &Option<T>) -> Option<T> {
 }
 
 /// Converts an optional key assignment to a string.
-/// 
+///
 /// # Arguments
 /// * `v` - The optional key assignment to convert.
 ///
 /// # Returns
 /// A string representation of the key assignment, or an empty string if `None` or unassigned.
-/// 
+///
 /// # Examples
 /// ```
 /// let v: Option<KeyAssignment> = Some(KeyAssignment::Key(42));
@@ -101,7 +103,9 @@ fn commit_key(draft: &str, orig: &Option<KeyAssignment>, max: u8) -> Option<KeyA
             Some(KeyAssignment::Key(_)) => Some(KeyAssignment::Unassigned),
         };
     }
-    clamp_int(draft, max as u32, 1).map(|n| KeyAssignment::Key(n as u8)).or(*orig)
+    clamp_int(draft, max as u32, 1)
+        .map(|n| KeyAssignment::Key(n as u8))
+        .or(*orig)
 }
 
 /// Shows a numbered tag as text, leaving unassigned tags blank.
@@ -120,15 +124,24 @@ fn commit_tag(draft: &str, orig: &Option<NumberTag>) -> Option<NumberTag> {
             Some(NumberTag::Tag(_)) => Some(NumberTag::Unassigned),
         };
     }
-    clamp_int(draft, 999, 1).map(|n| NumberTag::Tag(n as u16)).or(*orig)
+    clamp_int(draft, 999, 1)
+        .map(|n| NumberTag::Tag(n as u16))
+        .or(*orig)
 }
 
 /// Integer rounded to a multiple of `step` and clamped to `0..=max`; unparsable text keeps the original.
-fn commit_int<T: TryFrom<u32> + Copy>(draft: &str, orig: &Option<T>, max: u32, step: u32) -> Option<T> {
+fn commit_int<T: TryFrom<u32> + Copy>(
+    draft: &str,
+    orig: &Option<T>,
+    max: u32,
+    step: u32,
+) -> Option<T> {
     if draft.trim().is_empty() {
         return None;
     }
-    clamp_int(draft, max, step).and_then(|n| T::try_from(n).ok()).or(*orig)
+    clamp_int(draft, max, step)
+        .and_then(|n| T::try_from(n).ok())
+        .or(*orig)
 }
 
 /// Shows an optional frequency in MHz for the editor.
@@ -158,7 +171,10 @@ fn name_char_ok(c: char) -> bool {
 
 /// Removes unsupported characters and truncates a draft to the scanner name limit.
 fn sanitize_name(text: &str) -> String {
-    text.chars().filter(|c| name_char_ok(*c)).take(NAME_MAX).collect()
+    text.chars()
+        .filter(|c| name_char_ok(*c))
+        .take(NAME_MAX)
+        .collect()
 }
 
 /// Disallowed characters are dropped and the result is cut to 16 characters.
@@ -268,7 +284,6 @@ fn delete_item(list: String, i: usize, f: impl FnOnce(&mut ScanDatabase)) {
 
 // ---- Adding new items. New items get a placeholder name and default settings. ----
 
-
 /// Returns the user-facing name for a selectable system type.
 fn system_type_label(t: SystemType) -> &'static str {
     match t {
@@ -291,9 +306,17 @@ fn new_name(text: &str) -> Name {
 
 /// Makes a new system with the correct conventional or trunked shape for its type.
 fn new_system(sys_type: SystemType) -> System {
-    let info = SystemRecord { name: new_name("New System"), sys_type, ..Default::default() };
+    let info = SystemRecord {
+        name: new_name("New System"),
+        sys_type,
+        ..Default::default()
+    };
     let kind = if sys_type.is_trunked() {
-        SystemKind::Trunked { trunk: TrunkRecord::default(), sites: Vec::new(), tgid_groups: Vec::new() }
+        SystemKind::Trunked {
+            trunk: TrunkRecord::default(),
+            sites: Vec::new(),
+            tgid_groups: Vec::new(),
+        }
     } else {
         SystemKind::Conventional { groups: Vec::new() }
     };
@@ -311,7 +334,10 @@ fn new_system(sys_type: SystemType) -> System {
 fn new_channel_group() -> ChannelGroup {
     ChannelGroup {
         index: Default::default(),
-        info: GroupRecord { name: new_name("New Group"), ..Default::default() },
+        info: GroupRecord {
+            name: new_name("New Group"),
+            ..Default::default()
+        },
         channels: Vec::new(),
     }
 }
@@ -321,7 +347,11 @@ fn new_channel_group() -> ChannelGroup {
 fn new_tgid_group() -> TgidGroup {
     TgidGroup {
         index: Default::default(),
-        info: GroupRecord { name: new_name("New TG Group"), group_type: GroupType::Tgid, ..Default::default() },
+        info: GroupRecord {
+            name: new_name("New TG Group"),
+            group_type: GroupType::Tgid,
+            ..Default::default()
+        },
         tgids: Vec::new(),
     }
 }
@@ -330,23 +360,41 @@ fn new_tgid_group() -> TgidGroup {
 fn new_site() -> Site {
     Site {
         index: Default::default(),
-        info: SiteRecord { name: new_name("New Site"), ..Default::default() },
+        info: SiteRecord {
+            name: new_name("New Site"),
+            ..Default::default()
+        },
         band_plan: None,
         frequencies: Vec::new(),
     }
 }
 
 fn new_channel() -> Channel {
-    Channel { index: Default::default(), info: ChannelRecord { name: new_name("New Channel"), ..Default::default() } }
+    Channel {
+        index: Default::default(),
+        info: ChannelRecord {
+            name: new_name("New Channel"),
+            ..Default::default()
+        },
+    }
 }
 
 /// Makes an empty trunking frequency entry.
 fn new_trunk_freq() -> TrunkFreq {
-    TrunkFreq { index: Default::default(), info: Default::default() }
+    TrunkFreq {
+        index: Default::default(),
+        info: Default::default(),
+    }
 }
 
 fn new_tgid() -> TgidEntry {
-    TgidEntry { index: Default::default(), info: TgidRecord { name: new_name("New TGID"), ..Default::default() } }
+    TgidEntry {
+        index: Default::default(),
+        info: TgidRecord {
+            name: new_name("New TGID"),
+            ..Default::default()
+        },
+    }
 }
 
 /// Button that asks the parent to add a new item.
@@ -360,7 +408,12 @@ fn AddButton(label: &'static str, on_add: EventHandler<()>) -> Element {
 // ---- Input widgets: show the draft while editing, the stored value otherwise. ----
 
 /// Text input that edits a temporary draft and otherwise displays the stored value.
-fn text_field(kind: &'static str, editing: bool, shown: String, mut draft: Signal<String>) -> Element {
+fn text_field(
+    kind: &'static str,
+    editing: bool,
+    shown: String,
+    mut draft: Signal<String>,
+) -> Element {
     let value = if editing { draft() } else { shown };
     rsx! {
         input {
@@ -387,7 +440,13 @@ fn name_field(editing: bool, shown: String, mut draft: Signal<String>) -> Elemen
 }
 
 /// Numeric input with the scanner editor range and step shown to the browser.
-fn num_field(editing: bool, shown: String, mut draft: Signal<String>, max: u32, step: u32) -> Element {
+fn num_field(
+    editing: bool,
+    shown: String,
+    mut draft: Signal<String>,
+    max: u32,
+    step: u32,
+) -> Element {
     let value = if editing { draft() } else { shown };
     rsx! {
         input {
@@ -421,7 +480,11 @@ fn freq_field(editing: bool, shown: &Option<Freq>, draft: Signal<String>) -> Ele
 
 /// Checkbox that keeps an unset boolean distinct until the user changes it.
 fn check_field(editing: bool, shown: &Option<bool>, mut draft: Signal<bool>) -> Element {
-    let checked = if editing { draft() } else { shown.unwrap_or(false) };
+    let checked = if editing {
+        draft()
+    } else {
+        shown.unwrap_or(false)
+    };
     rsx! {
         input {
             r#type: "checkbox",
@@ -433,7 +496,12 @@ fn check_field(editing: bool, shown: &Option<bool>, mut draft: Signal<bool>) -> 
 }
 
 /// Selection input that switches between the current value and an editable draft.
-fn select_field(options: Vec<String>, editing: bool, shown: String, mut draft: Signal<String>) -> Element {
+fn select_field(
+    options: Vec<String>,
+    editing: bool,
+    shown: String,
+    mut draft: Signal<String>,
+) -> Element {
     let current = if editing { draft() } else { shown };
     rsx! {
         select {
@@ -449,13 +517,20 @@ fn select_field(options: Vec<String>, editing: bool, shown: String, mut draft: S
 
 /// Lists supported modulation choices, with a blank option for automatic selection.
 fn modulation_options() -> Vec<String> {
-    [Modulation::Auto, Modulation::Am, Modulation::Fm, Modulation::Nfm, Modulation::Wfm, Modulation::Fmb]
-        .into_iter()
-        .map(|m| m.to_string())
-        .fold(vec![String::new()], |mut v, m| {
-            v.push(m);
-            v
-        })
+    [
+        Modulation::Auto,
+        Modulation::Am,
+        Modulation::Fm,
+        Modulation::Nfm,
+        Modulation::Wfm,
+        Modulation::Fmb,
+    ]
+    .into_iter()
+    .map(|m| m.to_string())
+    .fold(vec![String::new()], |mut v, m| {
+        v.push(m);
+        v
+    })
 }
 
 /// Toggles an item between view and edit mode. Shown at the end of each system, group and row.
@@ -584,13 +659,21 @@ pub fn DatabaseView() -> Element {
     // Recomputed when the database or the target scanner changes.
     let report = use_memo(move || {
         let model = target_model();
-        SCAN_DATABASE.read().as_ref().map(|db| model.project(db).report).unwrap_or_default()
+        SCAN_DATABASE
+            .read()
+            .as_ref()
+            .map(|db| model.project(db).report)
+            .unwrap_or_default()
     });
     // Warn once per distinct result, not on every edit.
     let mut last_warned = use_signal(String::new);
     use_effect(move || {
         let report = report.read();
-        let text = if report.is_compatible() { String::new() } else { report.summary(target_model().name()) };
+        let text = if report.is_compatible() {
+            String::new()
+        } else {
+            report.summary(target_model().name())
+        };
         if *last_warned.peek() != text {
             if !text.is_empty() {
                 push_message(MessageKind::Warning, "compatibility", text.clone());
@@ -656,9 +739,11 @@ fn SystemView(si: usize, system: System, incompatible: bool, notes: Vec<String>)
     let tip = notes.join("\n");
     let initial_name = system.info.name.to_string();
     let settings = match (system.info.sys_type, &system.kind) {
-        (SystemType::P25Standard | SystemType::P25OneFreq, SystemKind::Trunked { trunk, .. }) => rsx! {
-            P25SystemSettingsView { si, info: system.info.clone(), trunk: trunk.clone() }
-        },
+        (SystemType::P25Standard | SystemType::P25OneFreq, SystemKind::Trunked { trunk, .. }) => {
+            rsx! {
+                P25SystemSettingsView { si, info: system.info.clone(), trunk: trunk.clone() }
+            }
+        }
         _ => rsx! { SystemSettingsView { si, info: system.info.clone() } },
     };
     rsx! {

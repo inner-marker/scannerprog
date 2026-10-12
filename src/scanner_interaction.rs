@@ -187,7 +187,7 @@ impl Scanner for SerialScanner {
         let mut byte = [0u8; 1];
         loop {
             self.0.read_exact(&mut byte).map_err(Error::Io)?;
-            if byte[0] == b'\r' {
+            if matches!(byte[0], b'\r' | b'\n') {
                 break;
             }
             buf.push(byte[0]);
@@ -202,6 +202,53 @@ impl Scanner for SerialScanner {
             });
         }
         Ok(reply)
+    }
+
+    fn send_xml(&mut self, cmd: &str, closing_tag: &str) -> Result<String, Error> {
+        let _ = self.0.clear(serialport::ClearBuffer::Input);
+        self.0
+            .write_all(format!("{cmd}\r").as_bytes())
+            .map_err(Error::Io)?;
+        let mut xml = String::new();
+        let mut line = Vec::new();
+        let mut byte = [0u8; 1];
+        loop {
+            self.0.read_exact(&mut byte).map_err(Error::Io)?;
+            if matches!(byte[0], b'\r' | b'\n') {
+                if line.is_empty() {
+                    continue;
+                }
+                let text = String::from_utf8_lossy(&line).into_owned();
+                line.clear();
+                let body = text
+                    .strip_prefix(&format!("{cmd},"))
+                    .unwrap_or(text.as_str());
+                if matches!(body, "ERR" | "NG" | "FER" | "ORER") {
+                    return Err(Error::Scanner {
+                        cmd: cmd.to_owned(),
+                        reply: text,
+                    });
+                }
+                if text.starts_with(&format!("{cmd},")) && text.contains("<XML>") {
+                    continue;
+                }
+                xml.push_str(&text);
+                xml.push('\n');
+                if text.contains(closing_tag) {
+                    break;
+                }
+                if xml.len() > 1_048_576 {
+                    return Err(Error::BadValue {
+                        cmd: "XML",
+                        pos: xml.len(),
+                        value: "scanner XML response exceeded 1 MiB".to_owned(),
+                    });
+                }
+            } else {
+                line.push(byte[0]);
+            }
+        }
+        Ok(xml)
     }
 
     fn stream(

@@ -4,11 +4,13 @@ use dioxus::prelude::*;
 
 use super::capability::gate;
 use crate::control::{
-    FILTER_ACTIVE, GROUP_KEYS, QUICK_KEY_DRAFT, QUICK_KEYS, apply_quick_keys, discard_filter,
-    discard_quick_key_changes, load_group_keys, refresh_quick_keys, restore_filter, scan_only,
-    toggle_group_key, toggle_system_key,
+    FILTER_ACTIVE, GROUP_KEYS, HP_QUICK_KEYS, HpQuickKeyLevel, QUICK_KEY_DRAFT, QUICK_KEYS,
+    apply_quick_keys, discard_filter, discard_quick_key_changes, load_group_keys,
+    refresh_hp_quick_keys, refresh_quick_keys, restore_filter, scan_only, toggle_group_key,
+    toggle_hp_quick_key, toggle_system_key,
 };
-use crate::models::live::Capability;
+use crate::models::live::{Capability, Family};
+use crate::scanner_interaction::connected_model;
 
 /// Visible system-key page (0–9), shared with keyboard shortcuts.
 pub static QUICK_KEY_PAGE: GlobalSignal<u8> = Signal::global(|| 0);
@@ -34,6 +36,12 @@ fn key_class(digit: u8) -> &'static str {
 /// System quick-key grid, the scanner's systems, and the temporary scan filter.
 #[component]
 pub fn QuickKeys() -> Element {
+    let hp = connected_model()
+        .and_then(|model| model.control_profile())
+        .is_some_and(|profile| matches!(profile.family, Family::HomePatrol | Family::Sds));
+    if hp {
+        return rsx! { HpQuickKeysPanel {} };
+    }
     let gate = gate(Capability::QuickKeysSystems);
     let enabled = gate.is_enabled();
     let keys = QUICK_KEYS.read().clone();
@@ -173,6 +181,116 @@ pub fn QuickKeys() -> Element {
                                     }
                                 }
                             }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn hp_key_class(state: u8) -> &'static str {
+    match state {
+        2 => "qk on",
+        1 => "qk off",
+        _ => "qk none",
+    }
+}
+
+#[component]
+fn HpQuickKeysPanel() -> Element {
+    let gate = gate(Capability::QuickKeysFavorites);
+    let enabled = gate.is_enabled();
+    let keys = HP_QUICK_KEYS.read().clone();
+    let page = *QUICK_KEY_PAGE.read();
+
+    rsx! {
+        section { id: "quick-keys", class: "panel",
+            h2 { "Live quick keys" }
+            p { class: "control-hint",
+                "Favorites, System, and Department quick keys apply immediately without entering Program Mode."
+            }
+            button {
+                disabled: !enabled,
+                onclick: move |_| {
+                    spawn(refresh_hp_quick_keys());
+                },
+                "Read from scanner"
+            }
+            if let Some(keys) = keys {
+                div { class: "qk-pages",
+                    button {
+                        disabled: page == 0,
+                        onclick: move |_| *QUICK_KEY_PAGE.write() = page.saturating_sub(1),
+                        "◀"
+                    }
+                    span { "Page {page} ({page * 10}–{page * 10 + 9})" }
+                    button {
+                        disabled: page == 9,
+                        onclick: move |_| *QUICK_KEY_PAGE.write() = (page + 1).min(9),
+                        "▶"
+                    }
+                }
+                HpQuickKeyGrid {
+                    label: "Favorites".to_owned(),
+                    states: keys.favorites,
+                    level: HpQuickKeyLevel::Favorite,
+                    page,
+                    enabled,
+                }
+                if !keys.systems.is_empty() {
+                    HpQuickKeyGrid {
+                        label: format!(
+                            "Systems in Favorites QK {}",
+                            keys.favorite_context.unwrap_or(0)
+                        ),
+                        states: keys.systems,
+                        level: HpQuickKeyLevel::System,
+                        page,
+                        enabled,
+                    }
+                }
+                if !keys.departments.is_empty() {
+                    HpQuickKeyGrid {
+                        label: format!(
+                            "Departments in Favorites QK {} / System QK {}",
+                            keys.favorite_context.unwrap_or(0),
+                            keys.system_context.unwrap_or(0)
+                        ),
+                        states: keys.departments,
+                        level: HpQuickKeyLevel::Department,
+                        page,
+                        enabled,
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[component]
+fn HpQuickKeyGrid(
+    label: String,
+    states: Vec<u8>,
+    level: HpQuickKeyLevel,
+    page: u8,
+    enabled: bool,
+) -> Element {
+    rsx! {
+        h3 { "{label}" }
+        div { class: "qk-grid",
+            for offset in 0..10usize {
+                {
+                    let key = usize::from(page) * 10 + offset;
+                    let state = states.get(key).copied().unwrap_or(0);
+                    rsx! {
+                        button {
+                            class: hp_key_class(state),
+                            disabled: !enabled || state == 0,
+                            onclick: move |_| {
+                                spawn(toggle_hp_quick_key(level, key as u8));
+                            },
+                            "{key}"
                         }
                     }
                 }

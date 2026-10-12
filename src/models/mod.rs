@@ -12,6 +12,8 @@ mod bcd396xt;
 mod bcd996p2;
 mod bcd996xt;
 mod compat;
+mod homepatrol;
+pub mod homepatrol_live;
 pub mod live;
 mod phase2_models;
 mod uniden;
@@ -79,7 +81,7 @@ pub trait ScannerModel: Sync {
 }
 
 /// The supported scanners, in the order used for the default model.
-static MODELS: [&dyn ScannerModel; 9] = [
+static MODELS: [&dyn ScannerModel; 14] = [
     &bcd325p2::Bcd325p2,
     &bcd396xt::Bcd396xt,
     &bc346xt::Bc346xt,
@@ -89,6 +91,11 @@ static MODELS: [&dyn ScannerModel; 9] = [
     &phase2_models::Bcd996t,
     &phase2_models::Bct15,
     &phase2_models::Bct15x,
+    &homepatrol::Bcd436hp,
+    &homepatrol::Bcd536hp,
+    &homepatrol::Sds100,
+    &homepatrol::Sds150,
+    &homepatrol::Sds200,
 ];
 
 /// All supported models.
@@ -120,6 +127,10 @@ impl Scanner for DynLink<'_> {
     /// Forward each command to the wrapped scanner connection.
     fn send(&mut self, cmd: &str) -> Result<String, Error> {
         self.0.send(cmd)
+    }
+
+    fn send_xml(&mut self, cmd: &str, closing_tag: &str) -> Result<String, Error> {
+        self.0.send_xml(cmd, closing_tag)
     }
 
     fn stream(

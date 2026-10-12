@@ -2,17 +2,18 @@ use dioxus::html::g::prevent_default;
 use dioxus::prelude::*;
 use std::time::Duration;
 
+use crate::confirm::{ConfirmDialog, confirm, confirm_with_details};
 use crate::control::REMOTE_CONTROL;
-use crate::scanner_page::ScannerPage;
 use crate::database_view::{DatabaseView, MemoryUsage};
-use crate::confirm::{confirm, confirm_with_details, ConfirmDialog};
-use crate::messages::{push_message, MessageCenter, MessageKind};
+use crate::messages::{MessageCenter, MessageKind, push_message};
 use crate::models::ScannerModel as _;
 use crate::scanner_interaction::{
-    target_model,
-    default_save_dir, default_save_name, detect_scanner, download_database, upload_database, UPLOAD_PROGRESS, load_database_ron, save_database_ron, DownloadStatus, DOWNLOAD_ACTIVE, DOWNLOAD_STATUS, SCANNER_INFO, SCANNER_MEMORY, SCAN_DATABASE, VALIDATION,
-    SCANNER_USB_DEVICE,
+    DOWNLOAD_ACTIVE, DOWNLOAD_STATUS, DownloadStatus, SCAN_DATABASE, SCANNER_INFO, SCANNER_MEMORY,
+    SCANNER_USB_DEVICE, UPLOAD_PROGRESS, VALIDATION, default_save_dir, default_save_name,
+    detect_scanner, download_database, load_database_ron, save_database_ron, target_model,
+    upload_database,
 };
+use crate::scanner_page::ScannerPage;
 
 /// Styles shared by the routed application pages.
 const MAIN_CSS: Asset = asset!("/assets/main.css");
@@ -29,14 +30,13 @@ enum ConnectionStatus {
 #[derive(Routable, Clone, PartialEq)]
 pub enum Route {
     #[layout(NavBar)]
-        #[route("/")]
-        Home {},
-        #[route("/database")]
-        DatabasePage {},
-        #[route("/scanner")]
-        ScannerPage {},
+    #[route("/")]
+    Home {},
+    #[route("/database")]
+    DatabasePage {},
+    #[route("/scanner")]
+    ScannerPage {},
 }
-
 
 /// Root UI: watches for scanner connections and mounts the page router.
 #[component]
@@ -202,8 +202,7 @@ fn Home() -> Element {
 ///
 /// Defaults to `false`; database edits and new validation attempts clear it.
 /// The toolbar enables upload only after validation succeeds.
-pub static UPLOAD_ENABLED: GlobalSignal<bool> = GlobalSignal::new( || false );
-
+pub static UPLOAD_ENABLED: GlobalSignal<bool> = GlobalSignal::new(|| false);
 
 /// Text for the upload confirmation listing what the scanner cannot take; empty if everything fits.
 fn upload_skip_summary(report: crate::models::CompatReport) -> String {
@@ -228,9 +227,6 @@ fn upload_skip_summary(report: crate::models::CompatReport) -> String {
 /// Actions for downloading, validating, uploading, and managing database files.
 #[component]
 fn Toolbar() -> Element {
-
-
-
     rsx! {
         // The toolbar groups scanner actions separately from the database editor below.
         div { id: "toolbar",

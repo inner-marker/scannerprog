@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased] - Refined Scanner Interface
+## [0.2.1] - Refined Scanner Interface
 
 - Scanner page rebuilt per `Roadmaps/0-2-1 SCANNER_PAGE_PLAN.md` (Phase 1, XT/P2 family: BCD325P2, BCD396XT, BC346XT):
   - Capability-driven controls: every control is always visible; ones the model can't use are dimmed (⛔), ones that need Program Mode show 🔒, and clicking a blocked control explains why.
@@ -14,6 +14,12 @@
   - Added a demand-driven `STS` LCD mirror, model-specific virtual keypads with tap/long-press gestures, `CSC` sweep display, battery/weather/GPS status, and log/error navigation.
   - Added live-control profiles for the BR330T, BCD996T, BCT15 and BCT15X. Their older database dialects remain explicitly unsupported rather than being sent incompatible XT/P2 memory commands.
   - Added parsers/tests for `STS` and streamed `CSC` samples. Hardware transcript/UI replay remains pending captured data.
+- Scanner page Phase 3:
+  - Added live-control profiles for BCD436HP, BCD536HP, SDS100, SDS150/SDS150GBT, and SDS200. Database transfer remains explicitly unavailable for these Favorites List database formats.
+  - Added multiline `GSI` XML transport and normalized HomePatrol/SDS state, including transient system/department/channel handles, hold state, Favorites List context, volume/squelch, signal, battery, mute, and recording state.
+  - Added native system/department/channel hold, next/previous, temporary/permanent avoid, scan resume, quick tune, three-part number-tag jump, and `URC` recording control with documented error messages.
+  - Added live FQK/SQK/DQK quick-key grids, detailed SDS `GCS` battery status, and a bounded SDS `GST`/`GWF` waterfall display.
+  - `GSI` and `GWF` are polled because the supplied specifications omit PSI/PWF activation details. Hardware transcript/UI replay remains pending captured data.
 
 ## [0.2.0] - Basic Scanner Functions
 

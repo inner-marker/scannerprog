@@ -11,9 +11,13 @@ use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
 use crate::messages::{MessageKind, push_message};
+use crate::models::homepatrol_live::{
+    ChargeStatus, WaterfallStatus, parse_charge_status, parse_gst, parse_scanner_info,
+    parse_waterfall,
+};
 use crate::models::live::{
-    Action, ActivityLog, DisplayStatus, LiveState, ScanMode, SpectrumPoint, commands, parse_csc,
-    parse_sts,
+    Action, ActivityLog, DisplayStatus, Family, LiveState, ScanMode, SpectrumPoint, commands,
+    parse_csc, parse_sts,
 };
 use crate::models::{self, DynLink, Error, GroupSummary, Scanner, SystemSummary};
 use crate::scanner_interaction::{DOWNLOAD_ACTIVE, SCANNER_INFO, connected_model, open_scanner};
@@ -83,9 +87,17 @@ pub static DISPLAY_STATUS: GlobalSignal<Option<DisplayStatus>> = Signal::global(
 /// GPS fix state from `GGA`; `None` means unavailable or not polled yet.
 pub static GPS_FIX: GlobalSignal<Option<bool>> = Signal::global(|| None);
 
+/// Detailed charge information reported by SDS scanners.
+pub static CHARGE_STATUS: GlobalSignal<Option<ChargeStatus>> = Signal::global(|| None);
+
 /// Recent samples from the active `CSC` sweep.
 pub static SPECTRUM: GlobalSignal<VecDeque<SpectrumPoint>> = Signal::global(VecDeque::new);
 pub static SPECTRUM_ACTIVE: GlobalSignal<bool> = Signal::global(|| false);
+
+/// SDS waterfall metadata and bounded FFT history.
+pub static WATERFALL_STATUS: GlobalSignal<Option<WaterfallStatus>> = Signal::global(|| None);
+pub static WATERFALL: GlobalSignal<VecDeque<Vec<u16>>> = Signal::global(VecDeque::new);
+pub static WATERFALL_ACTIVE: GlobalSignal<bool> = Signal::global(|| false);
 
 /// True while a Program Mode job is running.
 pub static PROGRAM_MODE: GlobalSignal<bool> = Signal::global(|| false);
@@ -95,6 +107,8 @@ pub static DISPLAY_WANTED: AtomicBool = AtomicBool::new(false);
 
 /// Controls the blocking CSC stream in the actor.
 static SPECTRUM_WANTED: AtomicBool = AtomicBool::new(false);
+static WATERFALL_WANTED: AtomicBool = AtomicBool::new(false);
+static WATERFALL_RESTORE: Mutex<Option<ScanMode>> = Mutex::new(None);
 
 /// The log being built; copied into [`ACTIVITY`] only when it changes, to avoid redrawing on every poll.
 static ACTIVITY_STORE: Mutex<ActivityLog> = Mutex::new(ActivityLog {
@@ -154,6 +168,13 @@ enum Event {
         pwr: Option<String>,
         latency: Duration,
     },
+    HpPoll {
+        xml: String,
+        latency: Duration,
+    },
+    Charge(String),
+    WaterfallStatus(String),
+    WaterfallFrame(String),
     /// A volume or squelch reading.
     Level {
         command: &'static str,
@@ -230,7 +251,7 @@ pub fn start_spectrum() {
         .and_then(|mode| {
             connected_model()?
                 .control_profile()
-                .and_then(|p| commands(&Action::JumpMode(*mode), &p).ok())
+                .and_then(|p| commands(&Action::JumpMode(*mode), &p, &LIVE.peek()).ok())
         })
         .unwrap_or_else(|| vec!["KEY,S,P".to_owned()]);
     if let Err(e) = submit(Request::StartSpectrum { restore }) {
@@ -247,6 +268,49 @@ pub fn start_spectrum() {
 /// Stops the active CSC sweep; the actor restores the previous mode best-effort.
 pub fn stop_spectrum() {
     SPECTRUM_WANTED.store(false, Ordering::SeqCst);
+}
+
+/// Enters SDS waterfall mode and enables GST/GWF polling.
+pub async fn start_waterfall() {
+    if WATERFALL_WANTED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    *WATERFALL_RESTORE.lock().expect("waterfall restore") = LIVE.peek().mode;
+    WATERFALL.write().clear();
+    *WATERFALL_STATUS.write() = None;
+    match send_command("JPM,WF_MODE,RESERVE").await {
+        Ok(_) => *WATERFALL_ACTIVE.write() = true,
+        Err(error) => {
+            WATERFALL_WANTED.store(false, Ordering::SeqCst);
+            push_message(
+                MessageKind::Warning,
+                "control",
+                format!("Starting waterfall failed: {error}"),
+            );
+        }
+    }
+}
+
+/// Stops SDS waterfall polling and restores the mode active before the view opened.
+pub fn stop_waterfall() {
+    if !WATERFALL_WANTED.swap(false, Ordering::SeqCst) {
+        return;
+    }
+    *WATERFALL_ACTIVE.write() = false;
+    let mode = WATERFALL_RESTORE.lock().expect("waterfall restore").take();
+    if let Some(mode) = mode {
+        spawn(async move {
+            let Some(profile) = connected_model().and_then(|model| model.control_profile()) else {
+                return;
+            };
+            let state = LIVE.peek().clone();
+            if let Ok(commands) = commands(&Action::JumpMode(mode), &profile, &state) {
+                for command in commands {
+                    let _ = send_command(command).await;
+                }
+            }
+        });
+    }
 }
 
 /// Reads a level from the reply to `VOL` or `SQL`.
@@ -322,8 +386,8 @@ async fn try_perform(action: &Action) -> Result<(), String> {
     let profile = model
         .control_profile()
         .ok_or("Remote control is not supported on this model")?;
-    for cmd in commands(action, &profile)? {
-        send_command(cmd).await.map_err(|e| match (&e, action) {
+    for cmd in commands(action, &profile, &LIVE.peek())? {
+        let reply = send_command(cmd).await.map_err(|e| match (&e, action) {
             // SPEC: the scanner answers NG when a mode jump or quick search is not allowed right now.
             (
                 Error::Scanner { .. },
@@ -332,6 +396,20 @@ async fn try_perform(action: &Action) -> Result<(), String> {
                 .to_owned(),
             _ => e.to_string(),
         })?;
+        if matches!(action, Action::SetRecord(_)) {
+            let error = [
+                ("0001", "the scanner could not access the recording file"),
+                ("0002", "the battery is too low to record"),
+                ("0003", "the recording session limit was reached"),
+                ("0004", "the scanner's real-time clock was lost"),
+            ]
+            .into_iter()
+            .find(|(code, _)| reply.contains(code))
+            .map(|(_, message)| message);
+            if let Some(error) = error {
+                return Err(error.to_owned());
+            }
+        }
     }
     // The protocol cannot report the mode, so remember what we last asked for.
     let mut live = LIVE.write();
@@ -344,6 +422,7 @@ async fn try_perform(action: &Action) -> Result<(), String> {
             live.muted = false;
         }
         Action::SetSquelch(v) => live.squelch = Some(*v),
+        Action::SetRecord(recording) => live.recording = *recording,
         _ => {}
     }
     Ok(())
@@ -388,6 +467,25 @@ fn transfer(
     result
 }
 
+fn transfer_xml(
+    link: &mut dyn Scanner,
+    events: &tokio::sync::mpsc::UnboundedSender<Event>,
+    command: &str,
+    closing_tag: &str,
+) -> Result<String, Error> {
+    let _ = events.send(Event::Log {
+        tx: true,
+        text: command.to_owned(),
+    });
+    let result = link.send_xml(command, closing_tag);
+    let text = match &result {
+        Ok(xml) => format!("<ScannerInfo XML: {} bytes>", xml.len()),
+        Err(error) => format!("! {error}"),
+    };
+    let _ = events.send(Event::Log { tx: false, text });
+    result
+}
+
 /// One status snapshot; `PWR` is read on every other poll to halve the traffic.
 fn poll_once(
     link: &mut dyn Scanner,
@@ -395,8 +493,33 @@ fn poll_once(
     tick: u32,
     gps: bool,
     pwr_status: bool,
+    family: Family,
 ) -> Result<Event, Error> {
     let started = Instant::now();
+    if matches!(family, Family::HomePatrol | Family::Sds) {
+        // PLAN: PSI push activation and interval units are undocumented; poll the equivalent
+        // documented GSI snapshot until captured hardware transcripts can verify PSI.
+        let xml = transfer_xml(link, events, "GSI", "</ScannerInfo>")?;
+        if family == Family::Sds && tick % LEVEL_EVERY == 0 {
+            if let Ok(reply) = transfer(link, events, "GCS") {
+                let _ = events.send(Event::Charge(reply));
+            }
+            if family == Family::Sds && WATERFALL_WANTED.load(Ordering::Relaxed) {
+                if tick % 5 == 0 {
+                    if let Ok(reply) = transfer(link, events, "GST") {
+                        let _ = events.send(Event::WaterfallStatus(reply));
+                    }
+                }
+                if let Ok(reply) = transfer(link, events, "GWF,1,1") {
+                    let _ = events.send(Event::WaterfallFrame(reply));
+                }
+            }
+        }
+        return Ok(Event::HpPoll {
+            xml,
+            latency: started.elapsed(),
+        });
+    }
     let glg = transfer(link, events, "GLG")?;
     let pwr = if pwr_status && tick % 2 == 0 {
         Some(transfer(link, events, "PWR")?)
@@ -434,6 +557,7 @@ fn run_actor(
     events: tokio::sync::mpsc::UnboundedSender<Event>,
     gps: bool,
     pwr_status: bool,
+    family: Family,
 ) {
     let outcome = (|| -> Result<(), Error> {
         let mut link = open_scanner(&port, baud, Duration::from_secs(2))?;
@@ -487,7 +611,7 @@ fn run_actor(
                 Err(RecvTimeoutError::Timeout) => {
                     tick = tick.wrapping_add(1);
                     // A missed poll is tolerated: the link only counts as lost after several in a row.
-                    match poll_once(&mut link, &events, tick, gps, pwr_status) {
+                    match poll_once(&mut link, &events, tick, gps, pwr_status, family) {
                         Ok(poll) => {
                             failures = 0;
                             if events.send(poll).is_err() {
@@ -504,7 +628,9 @@ fn run_actor(
                             }
                         }
                     }
-                    if tick % LEVEL_EVERY == 0 {
+                    if tick % LEVEL_EVERY == 0
+                        && !matches!(family, Family::HomePatrol | Family::Sds)
+                    {
                         for command in ["VOL", "SQL"] {
                             if let Ok(reply) = transfer(&mut link, &events, command) {
                                 let _ = events.send(Event::Level { command, reply });
@@ -514,7 +640,9 @@ fn run_actor(
                 }
                 Err(RecvTimeoutError::Disconnected) => {
                     // Remote control is being turned off: put the quick keys back first.
-                    if let Err(e) = restore_filter_now(&mut DynLink(&mut link)) {
+                    if !matches!(family, Family::HomePatrol | Family::Sds)
+                        && let Err(e) = restore_filter_now(&mut DynLink(&mut link))
+                    {
                         let _ = events.send(Event::Log {
                             tx: false,
                             text: format!("! could not restore the scan filter: {e}"),
@@ -562,6 +690,45 @@ fn apply_event(event: Event) -> bool {
                 *CONN.write() = ConnState::Connected;
             }
         }
+        Event::HpPoll { xml, latency } => match parse_scanner_info(&xml) {
+            Ok(snapshot) => {
+                let state = snapshot.live;
+                let mut store = ACTIVITY_STORE.lock().expect("activity");
+                if store.observe(&state, Instant::now(), &clock()) {
+                    *ACTIVITY.write() = store.clone();
+                }
+                drop(store);
+                if *LIVE.peek() != state {
+                    *LIVE.write() = state;
+                }
+                *DISPLAY_STATUS.write() = snapshot.display;
+                let latency_ms = u32::try_from(latency.as_millis()).unwrap_or(u32::MAX);
+                *HEALTH.write() = Health {
+                    latency_ms,
+                    errors: HEALTH.peek().errors,
+                };
+                *CONN.write() = ConnState::Connected;
+            }
+            Err(_) => HEALTH.write().errors += 1,
+        },
+        Event::Charge(reply) => match parse_charge_status(&reply) {
+            Ok(status) => *CHARGE_STATUS.write() = Some(status),
+            Err(_) => HEALTH.write().errors += 1,
+        },
+        Event::WaterfallStatus(reply) => match parse_gst(&reply) {
+            Ok(status) => *WATERFALL_STATUS.write() = Some(status),
+            Err(_) => HEALTH.write().errors += 1,
+        },
+        Event::WaterfallFrame(reply) => match parse_waterfall(&reply) {
+            Ok(frame) => {
+                let mut frames = WATERFALL.write();
+                if frames.len() >= 80 {
+                    frames.pop_front();
+                }
+                frames.push_back(frame);
+            }
+            Err(_) => HEALTH.write().errors += 1,
+        },
         Event::Level { command, reply } => {
             let level = parse_level(command, &reply);
             let mut live = LIVE.write();
@@ -668,9 +835,15 @@ pub async fn start_remote_control() {
     *HEALTH.write() = Health::default();
     *DISPLAY_STATUS.write() = None;
     *GPS_FIX.write() = None;
+    *CHARGE_STATUS.write() = None;
     SPECTRUM.write().clear();
     *SPECTRUM_ACTIVE.write() = false;
+    WATERFALL.write().clear();
+    *WATERFALL_STATUS.write() = None;
+    *WATERFALL_ACTIVE.write() = false;
+    WATERFALL_WANTED.store(false, Ordering::SeqCst);
     *PROGRAM_MODE.write() = false;
+    *HP_QUICK_KEYS.write() = None;
     *CONN.write() = ConnState::Connecting;
     *REMOTE_CONTROL.write() = true;
 
@@ -681,11 +854,17 @@ pub async fn start_remote_control() {
     let pwr_status = model
         .control_profile()
         .is_some_and(|profile| profile.pwr_status);
+    let family = model
+        .control_profile()
+        .map(|profile| profile.family)
+        .unwrap_or(Family::Xt);
     std::thread::spawn(move || {
-        run_actor(info.port, baud, requests, events_tx, gps, pwr_status);
+        run_actor(
+            info.port, baud, requests, events_tx, gps, pwr_status, family,
+        );
     });
 
-    if load_saved_snapshot() {
+    if !matches!(family, Family::HomePatrol | Family::Sds) && load_saved_snapshot() {
         *FILTER_ACTIVE.write() = true;
         push_message(
             MessageKind::Warning,
@@ -708,13 +887,19 @@ pub async fn start_remote_control() {
     *LIVE.write() = LiveState::default();
     *DISPLAY_STATUS.write() = None;
     *GPS_FIX.write() = None;
+    *CHARGE_STATUS.write() = None;
     SPECTRUM.write().clear();
     *SPECTRUM_ACTIVE.write() = false;
+    WATERFALL.write().clear();
+    *WATERFALL_STATUS.write() = None;
+    *WATERFALL_ACTIVE.write() = false;
     *PROGRAM_MODE.write() = false;
     DISPLAY_WANTED.store(false, Ordering::SeqCst);
     SPECTRUM_WANTED.store(false, Ordering::SeqCst);
+    WATERFALL_WANTED.store(false, Ordering::SeqCst);
     *QUICK_KEYS.write() = None;
     *GROUP_KEYS.write() = None;
+    *HP_QUICK_KEYS.write() = None;
     *QUICK_KEY_DRAFT.write() = QuickKeyDraft::default();
     *FILTER_ACTIVE.write() = SNAPSHOT.lock().expect("snapshot").is_some();
     *CONN.write() = if stop_reason.is_some() {
@@ -735,6 +920,7 @@ pub async fn start_remote_control() {
 /// Turns Remote Control off. The actor notices, releases the port and reports back.
 pub fn stop_remote_control() {
     SPECTRUM_WANTED.store(false, Ordering::SeqCst);
+    WATERFALL_WANTED.store(false, Ordering::SeqCst);
     *LINK.lock().expect("control link") = None;
 }
 
@@ -763,6 +949,18 @@ pub static QUICK_KEYS: GlobalSignal<Option<QuickKeys>> = Signal::global(|| None)
 /// Group quick keys of the system whose groups are expanded.
 pub static GROUP_KEYS: GlobalSignal<Option<GroupKeys>> = Signal::global(|| None);
 
+/// Live Favorites/System/Department quick keys for HomePatrol and SDS scanners.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct HpQuickKeys {
+    pub favorites: Vec<u8>,
+    pub systems: Vec<u8>,
+    pub departments: Vec<u8>,
+    pub favorite_context: Option<u8>,
+    pub system_context: Option<u8>,
+}
+
+pub static HP_QUICK_KEYS: GlobalSignal<Option<HpQuickKeys>> = Signal::global(|| None);
+
 /// Staged quick-key writes. Nothing here reaches the scanner until Apply is clicked.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct QuickKeyDraft {
@@ -780,6 +978,124 @@ pub static QUICK_KEY_DRAFT: GlobalSignal<QuickKeyDraft> = Signal::global(QuickKe
 
 /// True while a temporary scan filter is in place and can be restored.
 pub static FILTER_ACTIVE: GlobalSignal<bool> = Signal::global(|| false);
+
+fn parse_hp_quick_keys(command: &'static str, reply: &str) -> Result<Vec<u8>, Error> {
+    let fields: Vec<_> = reply.trim_end_matches(['\r', '\n']).split(',').collect();
+    if fields.first() != Some(&command) {
+        return Err(Error::UnexpectedReply {
+            expected: command,
+            reply: reply.to_owned(),
+        });
+    }
+    if fields.len() < 101 {
+        return Err(Error::MissingField {
+            cmd: command,
+            pos: 100,
+        });
+    }
+    fields[fields.len() - 100..]
+        .iter()
+        .enumerate()
+        .map(|(position, value)| {
+            value
+                .parse::<u8>()
+                .ok()
+                .filter(|state| *state <= 2)
+                .ok_or_else(|| Error::BadValue {
+                    cmd: command,
+                    pos: position,
+                    value: (*value).to_owned(),
+                })
+        })
+        .collect()
+}
+
+/// Reads live Favorites, System, and Department quick-key state in the current XML context.
+pub async fn refresh_hp_quick_keys() {
+    let favorite = LIVE.peek().favorite_qk;
+    let system = LIVE.peek().system_qk;
+    let result = async {
+        let favorites = parse_hp_quick_keys("FQK", &send_command("FQK").await?)?;
+        let systems = match favorite {
+            Some(favorite) => {
+                parse_hp_quick_keys("SQK", &send_command(format!("SQK,{favorite}")).await?)?
+            }
+            None => Vec::new(),
+        };
+        let departments = match (favorite, system) {
+            (Some(favorite), Some(system)) => parse_hp_quick_keys(
+                "DQK",
+                &send_command(format!("DQK,{favorite},{system}")).await?,
+            )?,
+            _ => Vec::new(),
+        };
+        Ok::<_, Error>(HpQuickKeys {
+            favorites,
+            systems,
+            departments,
+            favorite_context: favorite,
+            system_context: system,
+        })
+    }
+    .await;
+    if let Some(keys) = warn(
+        "Reading live quick keys",
+        result.map_err(|error| error.to_string()),
+    ) {
+        *HP_QUICK_KEYS.write() = Some(keys);
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum HpQuickKeyLevel {
+    Favorite,
+    System,
+    Department,
+}
+
+/// Toggles one HomePatrol/SDS quick key immediately; no Program Mode is used.
+pub async fn toggle_hp_quick_key(level: HpQuickKeyLevel, key: u8) {
+    let Some(mut keys) = HP_QUICK_KEYS.peek().clone() else {
+        return;
+    };
+    let (command, states) = match level {
+        HpQuickKeyLevel::Favorite => ("FQK".to_owned(), &mut keys.favorites),
+        HpQuickKeyLevel::System => {
+            let Some(favorite) = keys.favorite_context else {
+                return;
+            };
+            (format!("SQK,{favorite}"), &mut keys.systems)
+        }
+        HpQuickKeyLevel::Department => {
+            let (Some(favorite), Some(system)) = (keys.favorite_context, keys.system_context)
+            else {
+                return;
+            };
+            (format!("DQK,{favorite},{system}"), &mut keys.departments)
+        }
+    };
+    let position = usize::from(key);
+    let Some(state) = states.get_mut(position) else {
+        return;
+    };
+    if *state == 0 {
+        return;
+    }
+    *state = if *state == 2 { 1 } else { 2 };
+    let values = states
+        .iter()
+        .map(u8::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    match send_command(format!("{command},{values}")).await {
+        Ok(_) => *HP_QUICK_KEYS.write() = Some(keys),
+        Err(error) => push_message(
+            MessageKind::Warning,
+            "control",
+            format!("Changing live quick key failed: {error}"),
+        ),
+    }
+}
 
 /// Quick-key settings saved before a temporary scan filter was applied.
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Default)]
@@ -1086,5 +1402,17 @@ mod tests {
     fn parses_levels() {
         assert_eq!(parse_level("VOL", "VOL,7"), Some(7));
         assert_eq!(parse_level("SQL", "VOL,7"), None);
+    }
+
+    #[test]
+    fn parses_homepatrol_quick_key_states_after_context_fields() {
+        let states = (0..100)
+            .map(|index| (index % 3).to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let parsed = parse_hp_quick_keys("SQK", &format!("SQK,4,7,{states}")).unwrap();
+        assert_eq!(parsed.len(), 100);
+        assert_eq!(&parsed[..6], &[0, 1, 2, 0, 1, 2]);
+        assert!(parse_hp_quick_keys("FQK", "FQK,0,1").is_err());
     }
 }

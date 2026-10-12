@@ -25,6 +25,11 @@ Supported Scanner Models:
 - Uniden BCD996T ‼️ (live control; database transfer pending)
 - Uniden BCT15 ‼️ (live control; database transfer pending)
 - Uniden BCT15X ‼️ (live control; database transfer pending)
+- Uniden BCD436HP ‼️ (live control; database transfer pending)
+- Uniden BCD536HP ‼️ (live control; database transfer pending)
+- Uniden SDS100 ‼️ (live control; database transfer pending)
+- Uniden SDS150 / SDS150GBT ‼️ (live control; database transfer pending)
+- Uniden SDS200 ‼️ (live control; database transfer pending)
 
 ‼️ = Untested with a Physical Device
 
@@ -35,13 +40,8 @@ Future Scanner Models (USB interface):
 - Uniden BC780XLT
 - Uniden BC785XLT
 - Uniden BC895XLT
-- Uniden BCD436HP
-- Uniden BCD536HP
 - Uniden BCT8
 - Uniden HomePatrol-1
-- Uniden SDS100
-- Uniden SDS150
-- Uniden SDS200
 
 Unknown if they can be Inplimented:
 

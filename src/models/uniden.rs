@@ -512,6 +512,13 @@ pub trait Scanner {
     /// Send one command and return its reply line.
     fn send(&mut self, cmd: &str) -> Result<String, Error>;
 
+    /// Send a command whose response is an XML preamble followed by a multi-line document.
+    fn send_xml(&mut self, _cmd: &str, _closing_tag: &str) -> Result<String, Error> {
+        Err(Error::UnsupportedOperation(
+            "This transport cannot receive multi-line XML scanner data.",
+        ))
+    }
+
     /// Run a command whose reply is an open-ended stream until `should_stop` becomes true.
     fn stream(
         &mut self,
