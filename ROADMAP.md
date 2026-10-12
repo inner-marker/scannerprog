@@ -26,7 +26,7 @@ Additional Work:
 
 ### Scanning
 
-- [ ] (v0.1.4) Remote control of the scanner functions
+- [ ] (v0.2.0) Remote control of the scanner functions
   - The plan here is to slightly re-think the way scanning is controlled. On the radio, the UI is somewhat clunky and is limited by the available buttons and knobs. I want to create a more intuitive and flexible interface for controlling the scanner functions. The goal is to make it easier for users to manage scanning without being constrained by the physical interface of the radio. The underlying scanner functions will be the same, but the control UI on the computer will be difrent.
   - [ ] unable and disable scan systems and groups
   - [ ] listen to a single frequency

@@ -13,6 +13,8 @@ mod components;
 mod messages;
 mod merge;
 mod confirm;
+mod control;
+mod scanner_page;
 
 
 /// Starts the desktop app with a sized, titled window and no native menu.

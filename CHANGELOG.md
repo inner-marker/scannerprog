@@ -1,5 +1,19 @@
 # Changelog
 
+## [Unreleased] - Refined Scanner Interface
+
+- Scanner page rebuilt per `Roadmaps/0-2-1 SCANNER_PAGE_PLAN.md` (Phase 1, XT/P2 family: BCD325P2, BCD396XT, BC346XT):
+  - Capability-driven controls: every control is always visible; ones the model can't use are dimmed (⛔), ones that need Program Mode show 🔒, and clicking a blocked control explains why.
+  - Connection bar with health states (connecting, not responding, lost), a mode bar (Scan, Service, Custom, Close Call, Quick Search, Weather, Tone-Out), Now Playing with signal bars, transport, volume/squelch/mute, quick tune, jump to tag, an activity log with CSV export, a TX/RX log drawer, and a status strip.
+  - Keyboard shortcuts: Space (hold), ←/→, A (avoid), S (scan), M (mute).
+  - Polls tolerate dropped replies; the link is only dropped after ten failures in a row.
+
+- Added the BCD996XT and BCD996P2 (database and live control; untested on hardware). Their volume (0–29) and squelch (0–19) ranges differ, there is no power-off command, and the `[RECORD]` fields are not preserved.
+
+## [0.2.0] - Basic Scanner Functions
+
+TThis update adds the ability to control the scanner functions from the app.
+
 ## [0.1.3] - Common Database
 
 - Bump Rust edition to 2024

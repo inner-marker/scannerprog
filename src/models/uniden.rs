@@ -994,6 +994,108 @@ pub fn upload(link: &mut dyn Scanner, d: Dialect, db: &ScanDatabase, progress: s
     with_program_mode(&mut super::DynLink(link), |sc| write_database_with_progress(sc, d, db, progress))
 }
 
+/// A system as listed for quick-key control.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SystemSummary {
+    pub index: Index,
+    pub name: String,
+    /// System quick key 0-99, if one is assigned.
+    pub quick_key: Option<u8>,
+}
+
+/// A group as listed for quick-key control.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GroupSummary {
+    pub name: String,
+    /// Group quick key 1-9 or 0, if one is assigned.
+    pub quick_key: Option<u8>,
+}
+
+/// Position of system quick key `key` (0-99) in the 100 digits of `QSL`.
+/// Each page lists keys 1-9 then the multiple of ten (`PAGE0` ends with key 0).
+pub fn qsl_position(key: u8) -> usize {
+    let page = usize::from(key / 10);
+    let digit = if key % 10 == 0 { 9 } else { usize::from(key % 10) - 1 };
+    page * 10 + digit
+}
+
+/// Position of group quick key `key` in the 10 digits of `QGL` (1-9, then 0; 10 is also the last).
+pub fn qgl_position(key: u8) -> usize {
+    if key == 0 || key == 10 { 9 } else { usize::from(key) - 1 }
+}
+
+/// Reads `QSL` as 100 digits (see [`qsl_position`]): 0 unassigned, 1 on, 2 off.
+/// Must be called in Program Mode.
+pub fn read_qsl<S: Scanner>(sc: &mut S) -> Result<String, Error> {
+    let reply = sc.send("QSL")?;
+    let mut f = Fields::new("QSL", &reply)?;
+    let mut digits = String::new();
+    for _ in 0..10 {
+        digits.push_str(f.raw()?);
+    }
+    if digits.len() != 100 || !digits.bytes().all(|b| (b'0'..=b'2').contains(&b)) {
+        return Err(Error::BadValue { cmd: "QSL", pos: 1, value: digits });
+    }
+    Ok(digits)
+}
+
+/// Writes 100 `QSL` digits. Must be called in Program Mode.
+pub fn write_qsl<S: Scanner>(sc: &mut S, digits: &str) -> Result<(), Error> {
+    let pages: Vec<&str> = (0..10).map(|i| &digits[i * 10..i * 10 + 10]).collect();
+    expect_ok("QSL", &sc.send(&format!("QSL,{}", pages.join(",")))?)
+}
+
+/// Reads the 10 `QGL` digits for system `sys`. Must be called in Program Mode.
+pub fn read_qgl<S: Scanner>(sc: &mut S, sys: Index) -> Result<String, Error> {
+    let reply = sc.send(&format!("QGL,{sys}"))?;
+    let digits = Fields::new("QGL", &reply)?.raw()?.to_owned();
+    if digits.len() != 10 || !digits.bytes().all(|b| (b'0'..=b'2').contains(&b)) {
+        return Err(Error::BadValue { cmd: "QGL", pos: 1, value: digits });
+    }
+    Ok(digits)
+}
+
+/// Writes the 10 `QGL` digits for system `sys`. Must be called in Program Mode.
+pub fn write_qgl<S: Scanner>(sc: &mut S, sys: Index, digits: &str) -> Result<(), Error> {
+    expect_ok("QGL", &sc.send(&format!("QGL,{sys},{digits}"))?)
+}
+
+/// Lists the scanner's systems with their quick keys. Must be called in Program Mode.
+pub fn read_system_summaries<S: Scanner>(sc: &mut S) -> Result<Vec<SystemSummary>, Error> {
+    let head = parse_index_reply("SIH", &sc.send("SIH")?)?;
+    let records = walk_list(sc, head, |sc, idx| {
+        let rec = SystemRecord::parse(&sc.send(&format!("SIN,{idx}"))?)?;
+        let fwd = rec.links.fwd;
+        Ok((rec, fwd))
+    })?;
+    Ok(records
+        .into_iter()
+        .map(|(index, rec)| SystemSummary {
+            index,
+            name: rec.name.as_str().to_owned(),
+            quick_key: match rec.quick_key {
+                Some(KeyAssignment::Key(k)) => Some(k),
+                _ => None,
+            },
+        })
+        .collect())
+}
+
+/// Lists the groups of system `sys` with their quick keys. Must be called in Program Mode.
+pub fn read_group_summaries<S: Scanner>(sc: &mut S, sys: Index) -> Result<Vec<GroupSummary>, Error> {
+    let head = SystemRecord::parse(&sc.send(&format!("SIN,{sys}"))?)?.child_head;
+    Ok(walk_list(sc, head, |sc, i| read_group(sc, i))?
+        .into_iter()
+        .map(|(_, g)| GroupSummary {
+            name: g.name.as_str().to_owned(),
+            quick_key: match g.quick_key {
+                Some(KeyAssignment::Key(k)) => Some(k),
+                _ => None,
+            },
+        })
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1027,6 +1129,36 @@ mod tests {
                 _ => format!("{name},OK"),
             })
         }
+    }
+
+    #[test]
+    /// Checks the quick-key digit layout described by the spec.
+    fn quick_key_positions() {
+        assert_eq!(qsl_position(1), 0);
+        assert_eq!(qsl_position(0), 9);
+        assert_eq!(qsl_position(10), 19);
+        assert_eq!(qsl_position(11), 10);
+        assert_eq!(qsl_position(99), 98);
+        assert_eq!(qsl_position(90), 99);
+        assert_eq!(qgl_position(1), 0);
+        assert_eq!(qgl_position(0), 9);
+    }
+
+    #[test]
+    /// Checks QSL pages are joined and split correctly.
+    fn qsl_round_trip() {
+        let mut sc = Mock(HashMap::from([(
+            "QSL",
+            "QSL,1200000000,0000000000,0000000000,0000000000,0000000000,0000000000,0000000000,0000000000,0000000000,0000000002",
+        )]));
+        let d = read_qsl(&mut sc).unwrap();
+        assert_eq!(d.len(), 100);
+        assert_eq!(&d[..2], "12");
+        assert_eq!(&d[99..], "2");
+        let mut rec = Recorder { sent: vec![], next: 0 };
+        write_qsl(&mut rec, &d).unwrap();
+        assert!(rec.sent[0].starts_with("QSL,1200000000,0000000000,"));
+        assert!(read_qsl(&mut Mock(HashMap::from([("QSL", "QSL,12")]))).is_err());
     }
 
     #[test]

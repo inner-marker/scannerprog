@@ -7,13 +7,20 @@ use std::fmt;
 use crate::database::{Index, ScanDatabase, ScannerMemory, SystemType};
 
 mod bcd325p2;
+mod bcd996p2;
+mod bcd996xt;
 mod bc346xt;
 mod compat;
+pub mod live;
 mod bcd396xt;
 mod uniden;
 
 pub use compat::{CompatReport, Projection};
-pub use uniden::Scanner;
+pub use uniden::{
+    qgl_position, qsl_position, read_group_summaries, read_qgl, read_qsl, read_system_summaries, with_program_mode,
+    write_qgl, write_qsl, GroupSummary, Scanner, SystemSummary,
+};
+
 
 /// Progress callback: `(systems done, systems total)`.
 pub type Progress<'a> = &'a mut dyn FnMut(usize, usize);
@@ -47,6 +54,10 @@ pub trait ScannerModel: Sync {
     fn baud_rate(&self) -> u32;
     /// Memory limits, system types, and frequency coverage for this model.
     fn capabilities(&self) -> Capabilities;
+    /// What the Scanner page can do with this model; `None` if live control isn't supported.
+    fn control_profile(&self) -> Option<live::ControlProfile> {
+        None
+    }
     /// Reads the whole database (and, if available, memory statistics).
     fn download(
         &self,
@@ -63,7 +74,13 @@ pub trait ScannerModel: Sync {
 }
 
 /// The supported scanners, in the order used for the default model.
-static MODELS: [&dyn ScannerModel; 3] = [&bcd325p2::Bcd325p2, &bcd396xt::Bcd396xt, &bc346xt::Bc346xt];
+static MODELS: [&dyn ScannerModel; 5] = [
+    &bcd325p2::Bcd325p2,
+    &bcd396xt::Bcd396xt,
+    &bc346xt::Bc346xt,
+    &bcd996xt::Bcd996xt,
+    &bcd996p2::Bcd996p2,
+];
 
 /// All supported models.
 pub fn all() -> &'static [&'static dyn ScannerModel] {
@@ -88,7 +105,7 @@ pub fn default_model() -> &'static dyn ScannerModel {
 }
 
 /// Adapter so the generic protocol code can run over a `&mut dyn Scanner`.
-struct DynLink<'a>(&'a mut dyn Scanner);
+pub struct DynLink<'a>(pub &'a mut dyn Scanner);
 
 impl Scanner for DynLink<'_> {
     /// Forward each command to the wrapped scanner connection.

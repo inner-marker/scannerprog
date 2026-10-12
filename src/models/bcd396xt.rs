@@ -61,6 +61,11 @@ impl ScannerModel for Bcd396xt {
         }
     }
 
+    /// Live-control profile (the XT/P2 command set).
+    fn control_profile(&self) -> Option<super::live::ControlProfile> {
+        Some(super::live::xt_profile(self.name(), &self.capabilities(), &super::live::XtVariant::HANDHELD))
+    }
+
     /// Read this model's database using its selected wire dialect.
     fn download(
         &self,

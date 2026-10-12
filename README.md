@@ -9,8 +9,8 @@ Generative AI was used in the development of this project. Do with that informat
 ## Features
 
 - [x] Maintain the Database of Scanning Presets
-- [ ] Control the Scanner Remotely (via network or USB, depending on the model)
-- [ ] Record Scanned Audio (via 3.5mm audio jack from the scanner into the computer)
+- [ ] Control the Scanner Functions Remotely (usually USB)
+- [ ] Record Scanned Audio & Metadata
 
 ### Supported Scanners
 
@@ -21,6 +21,8 @@ Supported Scanner Models:
 - Uniden BCD325P2
 - Uniden BCD396XT ‼️
 - Uniden BC346XT ‼️
+- Uniden BCD996XT ‼️
+- Uniden BCD996P2 ‼️
 
 ‼️ = Untested with a Physical Device
 
@@ -32,21 +34,24 @@ Future Scanner Models (USB interface):
 - Uniden BC780XLT
 - Uniden BC785XLT
 - Uniden BC895XLT
-- Uniden BCD396XT
 - Uniden BC346XT (new; frequency ranges unverified)
-- Uniden BCD996P2
+- Uniden BCD396XT
+- Uniden BCD436HP
+- Uniden BCD536HP
 - Uniden BCD996T
 - Uniden BCD996XT
-- Uniden BCD436HP(UB376Z)
-- Uniden BCD536HP(UB375Z)
 - Uniden BCT8
 - Uniden BCT15
 - Uniden BCT15X
 - Uniden BR330T
-
-Future Scanner Models (Other interface):
-
+- Uniden SDS100
+- Uniden SDS150
 - Uniden SDS200
+
+Unknown if they can be Inplimented:
+
+- BC125AT (no remote commamd specification available)
+- BC355DN (no remote commamd specification available)
 
 ## Supported Operating Systems
 
@@ -59,11 +64,14 @@ Note: Not all of the features have been tested on all operating systems.
 - Linux
   - `scannerprog-*.deb` 
     - (install via `sudo dpkg -i scannerprog-*.deb`)
+    - Ubuntu, Mint, Debian
   - `scannerprog-*.rpm` 
     - (install via `sudo rpm -i scannerprog-*.rpm`)
+    - Fedora, CentOS, openSUSE
   - `scannerprog-*.AppImage` 
     - (Stand-alone, no installation required)
+    - Most Linux distributions
 - macOS
-  - `scannerprog-*.dmg`
+  - `scannerprog-*.dmg` (Unsigned, may require bypassing Gatekeeper)
 - Windows
   - `scannerprog-*-setup.exe`

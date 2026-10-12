@@ -454,3 +454,225 @@ button:hover:not(:disabled) {
     background: #ffe0e0;
     border-color: #b00000;
 }
+
+
+/* Scanner page (dark theme, like the rest of the app) */
+#scanner-page {
+    padding: 0.5em 1em 3.5em;
+    outline: none;
+}
+
+.control-hint {
+    margin-left: 0.8em;
+    font-weight: normal;
+    opacity: 0.7;
+}
+
+#connection-bar {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.8em;
+    margin-bottom: 0.8em;
+}
+
+.conn-dot {
+    width: 0.8em;
+    height: 0.8em;
+    border-radius: 50%;
+    background: #777;
+}
+.conn-dot.ok { background: #2e9e44; }
+.conn-dot.warn { background: #d9a400; }
+.conn-dot.bad { background: #c94040; }
+
+#remote-toggle-button {
+    font-weight: bold;
+}
+
+#remote-toggle-button.remote-on {
+    background: #2e9e44;
+    border-color: #2e9e44;
+    color: white;
+}
+
+#mode-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4em;
+    margin-bottom: 0.8em;
+}
+
+.mode-popover {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4em;
+    padding: 0.6em;
+    margin-bottom: 0.8em;
+    border: 1px solid #444;
+    border-radius: 6px;
+    background: #181b22;
+}
+
+/* Capability states: unsupported is dimmer than "not right now" */
+.cap-wrap {
+    position: relative;
+    display: inline-block;
+}
+.cap-button[aria-disabled="true"] {
+    cursor: not-allowed;
+}
+.cap-button.cap-notnow { opacity: 0.6; }
+.cap-button.cap-unsupported { opacity: 0.4; }
+.cap-button.active {
+    border-color: #5aa0ff;
+    box-shadow: 0 0 0 1px #5aa0ff inset;
+}
+.cap-popover {
+    position: absolute;
+    z-index: 10;
+    top: 100%;
+    left: 0;
+    margin-top: 4px;
+    width: max-content;
+    max-width: 22em;
+    padding: 0.4em 0.7em;
+    border: 1px solid #666;
+    border-radius: 5px;
+    background: #262a33;
+    font-size: 0.9em;
+}
+
+.cap-slider {
+    display: flex;
+    align-items: center;
+    gap: 0.8em;
+    margin: 0.4em 0;
+}
+.cap-slider.cap-notnow { opacity: 0.6; }
+.cap-slider.cap-unsupported { opacity: 0.4; }
+.cap-slider-label { width: 5em; }
+.cap-slider-value { width: 2em; text-align: right; }
+
+/* Three columns on wide windows, two on medium, one on narrow */
+#scanner-columns {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 1em;
+    align-items: start;
+}
+@media (max-width: 1279px) {
+    #scanner-columns { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 899px) {
+    #scanner-columns { grid-template-columns: minmax(0, 1fr); }
+}
+.scanner-col {
+    display: flex;
+    flex-direction: column;
+    gap: 1em;
+}
+
+.panel {
+    padding: 0.6em 1em 1em;
+    border: 1px solid #2c313c;
+    border-radius: 8px;
+    background: #141821;
+}
+.panel h2 {
+    margin: 0.2em 0 0.6em;
+    font-size: 1em;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    opacity: 0.7;
+}
+.panel.dimmed { opacity: 0.5; }
+
+.np-channel { font-size: 1.5em; font-weight: bold; }
+.np-system { opacity: 0.8; }
+.frequency {
+    margin: 0.3em 0;
+    font-size: 2.2em;
+    font-family: monospace;
+}
+.wx-label { font-size: 0.5em; opacity: 0.7; }
+.np-meta { display: flex; gap: 1em; opacity: 0.8; }
+.np-signal { display: flex; align-items: center; gap: 1em; margin-top: 0.6em; }
+
+.signal-bars { display: inline-flex; align-items: flex-end; gap: 3px; height: 1.4em; }
+.signal-bars .bar { width: 0.5em; height: 40%; background: #333; border-radius: 2px; }
+.signal-bars .bar:nth-child(2) { height: 55%; }
+.signal-bars .bar:nth-child(3) { height: 70%; }
+.signal-bars .bar:nth-child(4) { height: 85%; }
+.signal-bars .bar:nth-child(5) { height: 100%; }
+.signal-bars .bar.lit { background: #3acd5a; }
+.sql-led { opacity: 0.6; }
+.sql-led.open { color: #3acd5a; opacity: 1; }
+
+.transport-buttons { display: flex; flex-wrap: wrap; gap: 0.5em; }
+
+.tune-row { display: flex; flex-wrap: wrap; gap: 0.5em; align-items: center; }
+.tune-recent { display: flex; flex-wrap: wrap; gap: 0.4em; margin-top: 0.6em; }
+
+.noaa-table { border-collapse: collapse; margin: 0.5em 0; font-size: 0.9em; }
+.noaa-table td { padding: 0.2em 0.8em; border: 1px solid #555; text-align: center; }
+
+.activity-tools { display: flex; gap: 0.5em; margin-bottom: 0.5em; }
+.activity-table { width: 100%; border-collapse: collapse; font-size: 0.9em; }
+.activity-table td { padding: 0.2em 0.5em; border-top: 1px solid #2c313c; }
+
+/* Quick keys */
+.filter-banner {
+    margin: 0.5em 0;
+    padding: 0.6em 0.8em;
+    border: 1px solid #c58b00;
+    border-radius: 4px;
+    background: #3a2f10;
+    color: #ffe9b0;
+}
+.qk-grid {
+    display: grid;
+    grid-template-columns: repeat(10, minmax(0, 2.6em));
+    gap: 4px;
+    margin: 0.8em 0;
+}
+button.qk.on { background: #2e9e44; color: white; }
+button.qk.off { background: #b04040; color: white; }
+span.qk.on { color: #5fd47c; font-weight: bold; }
+span.qk.off { color: #e07070; text-decoration: line-through; }
+span.qk.none { opacity: 0.6; }
+.qk-system { margin: 0.3em 0; display: flex; flex-wrap: wrap; align-items: center; gap: 0.5em; }
+.qk-groups { flex-basis: 100%; margin: 0.2em 0 0.2em 2em; list-style: none; padding: 0; }
+.qk-groups li { display: flex; gap: 0.5em; align-items: center; margin: 0.2em 0; }
+
+/* Bottom drawer and status strip */
+#drawer {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 1.9em;
+    background: #10131a;
+    border-top: 1px solid #2c313c;
+}
+.drawer-tabs { display: flex; gap: 0.4em; padding: 0.2em 1em; align-items: center; }
+.drawer-tabs button.active { border-color: #5aa0ff; }
+.drawer-live { margin-left: auto; font-family: monospace; opacity: 0.7; }
+.drawer-body { height: 12em; overflow: auto; padding: 0.3em 1em; }
+.txrx-log { font-family: monospace; font-size: 0.85em; }
+.txrx-log .tx { color: #8cc4ff; }
+.txrx-log .rx { color: #c8c8c8; }
+.txrx-log .ts { opacity: 0.5; }
+
+#status-strip {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: flex;
+    gap: 1.5em;
+    padding: 0.3em 1em;
+    background: #0a0c10;
+    border-top: 1px solid #2c313c;
+    font-size: 0.85em;
+}
+#status-strip .planned { opacity: 0.4; }

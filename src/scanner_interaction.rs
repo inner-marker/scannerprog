@@ -178,6 +178,8 @@ struct SerialScanner(Box<dyn serialport::SerialPort>);
 impl Scanner for SerialScanner {
     /// Sends one model command and turns the scanner rejection codes into errors.
     fn send(&mut self, cmd: &str) -> Result<String, Error> {
+        // Drop stale bytes (e.g. a reply that arrived after a timeout) so replies stay paired with commands.
+        let _ = self.0.clear(serialport::ClearBuffer::Input);
         self.0.write_all(format!("{cmd}\r").as_bytes()).map_err(Error::Io)?;
         let mut buf = Vec::new();
         let mut byte = [0u8; 1];
@@ -196,6 +198,15 @@ impl Scanner for SerialScanner {
         }
         Ok(reply)
     }
+}
+
+/// Opens `port_name` as a [`Scanner`] with the given read timeout.
+pub fn open_scanner(port_name: &str, baud: u32, timeout: Duration) -> Result<impl Scanner, Error> {
+    let port = serialport::new(port_name, baud)
+        .timeout(timeout)
+        .open()
+        .map_err(|e| Error::Io(e.into()))?;
+    Ok(SerialScanner(port))
 }
 
 /// Blocking: reads the whole scan database over `port_name`, reporting `(done, total)` systems.

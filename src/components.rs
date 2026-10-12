@@ -2,6 +2,8 @@ use dioxus::html::g::prevent_default;
 use dioxus::prelude::*;
 use std::time::Duration;
 
+use crate::control::REMOTE_CONTROL;
+use crate::scanner_page::ScannerPage;
 use crate::database_view::{DatabaseView, MemoryUsage};
 use crate::confirm::{confirm, confirm_with_details, ConfirmDialog};
 use crate::messages::{push_message, MessageCenter, MessageKind};
@@ -31,6 +33,8 @@ pub enum Route {
         Home {},
         #[route("/database")]
         DatabasePage {},
+        #[route("/scanner")]
+        ScannerPage {},
 }
 
 
@@ -116,6 +120,7 @@ fn NavBar() -> Element {
         nav { id: "navbar",
             Link { to: Route::Home {}, active_class: "active", "Home" }
             Link { to: Route::DatabasePage {}, active_class: "active", "Database" }
+            Link { to: Route::ScannerPage {}, active_class: "active", "Scanner" }
             span {
                 class: "connection-indicator {status_class}",
                 title: "Connection status",
@@ -232,12 +237,13 @@ fn Toolbar() -> Element {
             button {
                 id: "download-from-scanner",
                 disabled: matches!(*DOWNLOAD_STATUS.read(), DownloadStatus::InProgress { .. })
-                    || UPLOAD_PROGRESS.read().is_some(),
+                    || UPLOAD_PROGRESS.read().is_some()
+                    || *REMOTE_CONTROL.read(),
                 onclick: move |_| {
                     *UPLOAD_ENABLED.write() = false;
                     spawn(download_database());
                 },
-                title: "Download the database from the connected scanner.",
+                title: if *REMOTE_CONTROL.read() { "Turn off Remote Control on the Scanner page first." } else { "Download the database from the connected scanner." },
                 "Download From Scanner"
             }
             button {
@@ -273,8 +279,9 @@ fn Toolbar() -> Element {
                 id: "upload-to-scanner",
                 disabled: !*UPLOAD_ENABLED.read()
                     || UPLOAD_PROGRESS.read().is_some()
-                    || matches!(*DOWNLOAD_STATUS.read(), DownloadStatus::InProgress { .. }),
-                title: "Upload the database to the scanner (requires a successful validation).",
+                    || matches!(*DOWNLOAD_STATUS.read(), DownloadStatus::InProgress { .. })
+                    || *REMOTE_CONTROL.read(),
+                title: if *REMOTE_CONTROL.read() { "Turn off Remote Control on the Scanner page first." } else { "Upload the database to the scanner (requires a successful validation)." },
                 onclick: move |_| {
                     let skipped = match SCAN_DATABASE.peek().as_ref() {
                         Some(db) => upload_skip_summary(target_model().project(db).report),

@@ -59,6 +59,11 @@ impl ScannerModel for Bc346xt {
         }
     }
 
+    /// Live-control profile (the XT/P2 command set).
+    fn control_profile(&self) -> Option<super::live::ControlProfile> {
+        Some(super::live::xt_profile(self.name(), &self.capabilities(), &super::live::XtVariant { military_air: false, ..super::live::XtVariant::HANDHELD }))
+    }
+
     /// Read this model's database using its selected wire dialect.
     fn download(
         &self,
