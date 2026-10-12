@@ -1,6 +1,6 @@
 [package]
 name = "scannerprog"
-version = "0.1.3"
+version = "0.2.1"
 authors = ["stuart"]
 edition = "2024"
 
