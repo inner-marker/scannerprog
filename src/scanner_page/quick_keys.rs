@@ -1,14 +1,26 @@
-//! Quick keys: reading and toggling system and group quick keys, and the temporary scan filter.
-//! PLAN: edits apply immediately (with the 🔒 note) instead of being staged and applied in one batch.
+//! Quick keys: staged system/group edits and the temporary scan filter.
 
 use dioxus::prelude::*;
 
 use super::capability::gate;
 use crate::control::{
-    discard_filter, load_group_keys, refresh_quick_keys, restore_filter, scan_only, toggle_group_key,
-    toggle_system_key, FILTER_ACTIVE, GROUP_KEYS, QUICK_KEYS,
+    FILTER_ACTIVE, GROUP_KEYS, QUICK_KEY_DRAFT, QUICK_KEYS, apply_quick_keys, discard_filter,
+    discard_quick_key_changes, load_group_keys, refresh_quick_keys, restore_filter, scan_only,
+    toggle_group_key, toggle_system_key,
 };
 use crate::models::live::Capability;
+
+/// Visible system-key page (0–9), shared with keyboard shortcuts.
+pub static QUICK_KEY_PAGE: GlobalSignal<u8> = Signal::global(|| 0);
+
+/// Scanner quick-key number selected by a keyboard digit on `page`.
+pub fn page_key(page: u8, digit: u8) -> u8 {
+    if digit == 0 {
+        page * 10
+    } else {
+        page * 10 + digit
+    }
+}
 
 /// Digit state of a quick key: 1 on, 2 off, anything else unassigned.
 fn key_class(digit: u8) -> &'static str {
@@ -27,6 +39,10 @@ pub fn QuickKeys() -> Element {
     let keys = QUICK_KEYS.read().clone();
     let groups = GROUP_KEYS.read().clone();
     let filter = *FILTER_ACTIVE.read();
+    let pending = QUICK_KEY_DRAFT.read().count();
+    let page = *QUICK_KEY_PAGE.read();
+    let editing_enabled = enabled && !filter;
+    let scan_only_enabled = enabled && pending == 0;
 
     rsx! {
         section { id: "quick-keys", class: "panel",
@@ -38,12 +54,27 @@ pub fn QuickKeys() -> Element {
                 div { class: "filter-banner",
                     "Temporary scan filter active. "
                     button {
-                        disabled: !enabled,
+                        disabled: !editing_enabled,
                         title: "Put the quick keys back the way they were.",
                         onclick: move |_| {
                             spawn(restore_filter());
                         },
                         "Restore"
+                    }
+                    if pending > 0 {
+                        div { class: "qk-pending", role: "status",
+                            strong { "{pending} pending quick-key change(s)." }
+                            span { " Applying briefly pauses scanning." }
+                            button {
+                                disabled: !enabled || pending > 0,
+                                title: if pending > 0 { "Apply or discard pending changes before reading again." },
+                                onclick: move |_| {
+                                    spawn(apply_quick_keys());
+                                },
+                                "Apply"
+                            }
+                            button { onclick: move |_| discard_quick_key_changes(), "Discard changes" }
+                        }
                     }
                     button {
                         title: "Forget the saved settings without writing them to the scanner.",
@@ -63,12 +94,25 @@ pub fn QuickKeys() -> Element {
                 "Read from scanner"
             }
             if let Some(keys) = keys {
+                div { class: "qk-pages",
+                    button {
+                        disabled: page == 0,
+                        onclick: move |_| *QUICK_KEY_PAGE.write() = page.saturating_sub(1),
+                        "◀"
+                    }
+                    span { "Page {page} ({page * 10}–{page * 10 + 9})" }
+                    button {
+                        disabled: page == 9,
+                        onclick: move |_| *QUICK_KEY_PAGE.write() = (page + 1).min(9),
+                        "▶"
+                    }
+                }
                 div { class: "qk-grid",
-                    for pos in 0..100usize {
+                    for offset in 0..10usize {
                         {
-                            let page = pos / 10;
-                            let d = pos % 10;
-                            let key = (if d == 9 { page * 10 } else { page * 10 + d + 1 }) as u8;
+                            let pos = usize::from(page) * 10 + offset;
+                            let d = offset;
+                            let key = (if d == 9 { usize::from(page) * 10 } else { usize::from(page) * 10 + d + 1 }) as u8;
                             let digit = keys.qsl.as_bytes()[pos];
                             let name = keys
                                 .systems
@@ -79,10 +123,10 @@ pub fn QuickKeys() -> Element {
                             rsx! {
                                 button {
                                     class: key_class(digit),
-                                    disabled: !enabled || digit == b'0',
+                                    disabled: !editing_enabled || digit == b'0',
                                     title: "{name}",
                                     onclick: move |_| {
-                                        spawn(toggle_system_key(key));
+                                        toggle_system_key(key);
                                     },
                                     "{key}"
                                 }
@@ -108,7 +152,7 @@ pub fn QuickKeys() -> Element {
                                 div { class: "qk-system",
                                     span { class: key_class(digit), "{label}" }
                                     button {
-                                        disabled: !enabled || system.quick_key.is_none(),
+                                        disabled: !scan_only_enabled || system.quick_key.is_none(),
                                         title: "Temporarily scan only this system.",
                                         onclick: move |_| {
                                             spawn(scan_only(for_scan.clone(), None));
@@ -124,7 +168,7 @@ pub fn QuickKeys() -> Element {
                                     }
                                     if open {
                                         if let Some(g) = groups.clone() {
-                                            GroupList { keys: g, enabled }
+                                            GroupList { keys: g, enabled: editing_enabled, scan_only_enabled }
                                         }
                                     }
                                 }
@@ -139,7 +183,7 @@ pub fn QuickKeys() -> Element {
 
 /// Groups of one system with their quick keys.
 #[component]
-fn GroupList(keys: crate::control::GroupKeys, enabled: bool) -> Element {
+fn GroupList(keys: crate::control::GroupKeys, enabled: bool, scan_only_enabled: bool) -> Element {
     rsx! {
         ul { class: "qk-groups",
             for group in keys.groups.clone() {
@@ -161,13 +205,13 @@ fn GroupList(keys: crate::control::GroupKeys, enabled: bool) -> Element {
                                 disabled: !enabled || key.is_none(),
                                 onclick: move |_| {
                                     if let Some(k) = key {
-                                        spawn(toggle_group_key(index, k));
+                                        toggle_group_key(index, k);
                                     }
                                 },
                                 "On/Off"
                             }
                             button {
-                                disabled: !enabled || key.is_none() || system.quick_key.is_none(),
+                                disabled: !scan_only_enabled || key.is_none() || system.quick_key.is_none(),
                                 title: "Temporarily scan only this group.",
                                 onclick: move |_| {
                                     spawn(scan_only(system.clone(), key));

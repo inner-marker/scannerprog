@@ -5,7 +5,7 @@
 
 use super::uniden::{self, Dialect};
 use super::{Capabilities, Error, Progress, Scanner, ScannerModel};
-use crate::database::{ScanDatabase, ScannerMemory, SystemType, MAX_BLOCKS};
+use crate::database::{MAX_BLOCKS, ScanDatabase, ScannerMemory, SystemType};
 
 /// Uniden BCD396XT model definition and capabilities.
 pub struct Bcd396xt;
@@ -63,7 +63,11 @@ impl ScannerModel for Bcd396xt {
 
     /// Live-control profile (the XT/P2 command set).
     fn control_profile(&self) -> Option<super::live::ControlProfile> {
-        Some(super::live::xt_profile(self.name(), &self.capabilities(), &super::live::XtVariant::HANDHELD))
+        Some(super::live::xt_profile(
+            self.name(),
+            &self.capabilities(),
+            &super::live::XtVariant::HANDHELD,
+        ))
     }
 
     /// Read this model's database using its selected wire dialect.
@@ -76,7 +80,12 @@ impl ScannerModel for Bcd396xt {
     }
 
     /// Write the database to this model using its selected wire dialect.
-    fn upload(&self, link: &mut dyn Scanner, db: &ScanDatabase, progress: Progress) -> Result<(), Error> {
+    fn upload(
+        &self,
+        link: &mut dyn Scanner,
+        db: &ScanDatabase,
+        progress: Progress,
+    ) -> Result<(), Error> {
         uniden::upload(link, DIALECT, db, progress)
     }
 }

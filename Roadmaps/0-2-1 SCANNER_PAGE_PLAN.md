@@ -475,6 +475,7 @@ scanner-core/            // UI-free crate: model.rs, driver.rs, families/{legacy
    *Done when:* the BCD325P2 can be monitored and controlled for an hour without desync, and every unsupported control shows the correct explanation.
 2. **Phase 2 — Families B1/B2/C complete.** QuickKeysPanel with staged Program-Mode apply, VirtualRemote (STS mirror + keypad from keymaps), CSC sweep spectrum, StatusStrip.
    *Done when:* every B/C model profile exists, and a mock driver replaying captured transcripts passes UI tests.
+   **Implemented (2026-10-12):** all B1/B2/C live-control profiles, staged quick keys, STS remote/keypad, CSC sweep and status indicators are present. Parser/profile unit tests use specification-format transcript lines. Replay tests against captured hardware transcripts remain pending because no captures are available; all newly added profiles and streaming behavior are unverified on hardware. BR330T/BCD996T/BCT15/BCT15X database transfers remain gated with an explicit error until their older memory dialects receive dedicated codecs.
 3. **Phase 3 — Families D/D′.** PSI XML parser, native HLD/AVD/NXT/PRV with HoldLevelSelector, FQK/SQK/DQK live quick keys, SDS waterfall (GWF/PWF), GCS battery, URC record.
 4. **Phase 4 — Family A (BCT8).** Space-separated parser, unsolicited events, `LCD` mirror, `SB` banks, `MU` mute.
 5. **Phase 5 — Polish.** Glyph rendering for non-ASCII LCD characters, activity-log persistence/export, multi-radio groundwork.

@@ -14,8 +14,6 @@ Generative AI was used in the development of this project. Do with that informat
 
 ### Supported Scanners
 
-At this time, the program only interfaces with the **Uniden BCD325P2** scanner.
-
 Supported Scanner Models:
 
 - Uniden BCD325P2
@@ -23,6 +21,10 @@ Supported Scanner Models:
 - Uniden BC346XT ‼️
 - Uniden BCD996XT ‼️
 - Uniden BCD996P2 ‼️
+- Uniden BR330T ‼️ (live control; database transfer pending)
+- Uniden BCD996T ‼️ (live control; database transfer pending)
+- Uniden BCT15 ‼️ (live control; database transfer pending)
+- Uniden BCT15X ‼️ (live control; database transfer pending)
 
 ‼️ = Untested with a Physical Device
 
@@ -30,28 +32,26 @@ Future Scanner Models (USB interface):
 
 - Uniden BC245XLT
 - Uniden BC250D
-- Uniden BC346XT
 - Uniden BC780XLT
 - Uniden BC785XLT
 - Uniden BC895XLT
-- Uniden BC346XT (new; frequency ranges unverified)
-- Uniden BCD396XT
 - Uniden BCD436HP
 - Uniden BCD536HP
-- Uniden BCD996T
-- Uniden BCD996XT
 - Uniden BCT8
-- Uniden BCT15
-- Uniden BCT15X
-- Uniden BR330T
+- Uniden HomePatrol-1
 - Uniden SDS100
 - Uniden SDS150
 - Uniden SDS200
 
 Unknown if they can be Inplimented:
 
-- BC125AT (no remote commamd specification available)
-- BC355DN (no remote commamd specification available)
+- Uniden BC125AT (no remote commamd specification available)
+- Uniden BC355N (no remote commamd specification available)
+- Uniden BC365CRS (no remote commamd specification available)
+- Uniden BC75XLT (no remote commamd specification available)
+- Uniden BCD260DN (no remote command specification available)
+- Uniden HomePatrol-2 (no remote commamd specification available)
+- Uniden SR30C (no remote commamd specification available)
 
 ## Supported Operating Systems
 

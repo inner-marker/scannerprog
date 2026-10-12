@@ -5,17 +5,18 @@
 
 use dioxus::prelude::*;
 use std::collections::VecDeque;
-use std::sync::atomic::Ordering;
-use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
-use crate::messages::{push_message, MessageKind};
-use crate::models::live::{commands, Action, ActivityLog, LiveState, ScanMode};
-use crate::models::{self, DynLink, Error, GroupSummary, Scanner, SystemSummary};
-use crate::scanner_interaction::{
-    connected_model, open_scanner, DOWNLOAD_ACTIVE, SCANNER_INFO,
+use crate::messages::{MessageKind, push_message};
+use crate::models::live::{
+    Action, ActivityLog, DisplayStatus, LiveState, ScanMode, SpectrumPoint, commands, parse_csc,
+    parse_sts,
 };
+use crate::models::{self, DynLink, Error, GroupSummary, Scanner, SystemSummary};
+use crate::scanner_interaction::{DOWNLOAD_ACTIVE, SCANNER_INFO, connected_model, open_scanner};
 
 /// How often the scanner's status is read while no command is waiting.
 const POLL_INTERVAL: Duration = Duration::from_millis(200);
@@ -76,8 +77,30 @@ pub static TXRX_LOG: GlobalSignal<VecDeque<LogLine>> = Signal::global(VecDeque::
 /// Receptions seen since remote control was turned on.
 pub static ACTIVITY: GlobalSignal<ActivityLog> = Signal::global(ActivityLog::default);
 
+/// LCD and indicator status from the latest `STS` poll.
+pub static DISPLAY_STATUS: GlobalSignal<Option<DisplayStatus>> = Signal::global(|| None);
+
+/// GPS fix state from `GGA`; `None` means unavailable or not polled yet.
+pub static GPS_FIX: GlobalSignal<Option<bool>> = Signal::global(|| None);
+
+/// Recent samples from the active `CSC` sweep.
+pub static SPECTRUM: GlobalSignal<VecDeque<SpectrumPoint>> = Signal::global(VecDeque::new);
+pub static SPECTRUM_ACTIVE: GlobalSignal<bool> = Signal::global(|| false);
+
+/// True while a Program Mode job is running.
+pub static PROGRAM_MODE: GlobalSignal<bool> = Signal::global(|| false);
+
+/// Set by the Virtual Remote while its LCD is visible.
+pub static DISPLAY_WANTED: AtomicBool = AtomicBool::new(false);
+
+/// Controls the blocking CSC stream in the actor.
+static SPECTRUM_WANTED: AtomicBool = AtomicBool::new(false);
+
 /// The log being built; copied into [`ACTIVITY`] only when it changes, to avoid redrawing on every poll.
-static ACTIVITY_STORE: Mutex<ActivityLog> = Mutex::new(ActivityLog { entries: Vec::new(), open: false });
+static ACTIVITY_STORE: Mutex<ActivityLog> = Mutex::new(ActivityLog {
+    entries: Vec::new(),
+    open: false,
+});
 
 /// Empties the activity log.
 pub fn clear_activity() {
@@ -99,25 +122,55 @@ fn log_line(tx: bool, text: String) {
     if log.len() >= LOG_LIMIT {
         log.pop_front();
     }
-    log.push_back(LogLine { clock: clock(), tx, text });
+    log.push_back(LogLine {
+        clock: clock(),
+        tx,
+        text,
+    });
 }
 
 /// A request for the actor thread.
 enum Request {
     /// One command and its reply line.
-    Command { command: String, reply: tokio::sync::oneshot::Sender<Result<String, Error>> },
+    Command {
+        command: String,
+        reply: tokio::sync::oneshot::Sender<Result<String, Error>>,
+    },
     /// Several commands that must run back to back, such as a Program Mode edit.
-    Job(Box<dyn FnOnce(&mut dyn Scanner) + Send>),
+    Job {
+        program_mode: bool,
+        job: Box<dyn FnOnce(&mut dyn Scanner) + Send>,
+    },
+    StartSpectrum {
+        restore: Vec<String>,
+    },
 }
 
 /// Message from the actor thread to the UI.
 enum Event {
     /// A completed poll: the `GLG` reply and, every other poll, the `PWR` reply.
-    Poll { glg: String, pwr: Option<String>, latency: Duration },
+    Poll {
+        glg: String,
+        pwr: Option<String>,
+        latency: Duration,
+    },
     /// A volume or squelch reading.
-    Level { command: &'static str, reply: String },
-    PollFailed { consecutive: u32 },
-    Log { tx: bool, text: String },
+    Level {
+        command: &'static str,
+        reply: String,
+    },
+    Status(String),
+    Gps(String),
+    Spectrum(SpectrumPoint),
+    SpectrumStopped(Option<String>),
+    ProgramMode(bool),
+    PollFailed {
+        consecutive: u32,
+    },
+    Log {
+        tx: bool,
+        text: String,
+    },
     /// The actor has stopped; the reason is `None` for a normal shutdown.
     Stopped(Option<String>),
 }
@@ -127,32 +180,83 @@ static LINK: Mutex<Option<mpsc::Sender<Request>>> = Mutex::new(None);
 
 /// Queues a request for the actor.
 fn submit(request: Request) -> Result<(), String> {
-    let link = LINK.lock().map_err(|_| "control link poisoned".to_owned())?;
+    let link = LINK
+        .lock()
+        .map_err(|_| "control link poisoned".to_owned())?;
     let tx = link.as_ref().ok_or("remote control is off")?;
-    tx.send(request).map_err(|_| "remote control stopped".to_owned())
+    tx.send(request)
+        .map_err(|_| "remote control stopped".to_owned())
 }
 
 /// Sends one command through the actor and returns the scanner's reply line.
 pub async fn send_command(command: impl Into<String>) -> Result<String, Error> {
     let (reply, wait) = tokio::sync::oneshot::channel();
-    submit(Request::Command { command: command.into(), reply }).map_err(|e| Error::Io(std::io::Error::other(e)))?;
-    wait.await.map_err(|_| Error::Io(std::io::Error::other("remote control stopped")))?
+    submit(Request::Command {
+        command: command.into(),
+        reply,
+    })
+    .map_err(|e| Error::Io(std::io::Error::other(e)))?;
+    wait.await
+        .map_err(|_| Error::Io(std::io::Error::other("remote control stopped")))?
 }
 
 /// Runs `job` on the actor thread with exclusive use of the scanner, so polling pauses meanwhile.
 async fn run_job<T: Send + 'static>(
+    program_mode: bool,
     job: impl FnOnce(&mut DynLink) -> Result<T, Error> + Send + 'static,
 ) -> Result<T, String> {
     let (reply, wait) = tokio::sync::oneshot::channel();
-    submit(Request::Job(Box::new(move |link| {
-        let _ = reply.send(job(&mut DynLink(link)).map_err(|e| e.to_string()));
-    })))?;
-    wait.await.map_err(|_| "remote control stopped".to_owned())?
+    submit(Request::Job {
+        program_mode,
+        job: Box::new(move |link| {
+            let _ = reply.send(job(&mut DynLink(link)).map_err(|e| e.to_string()));
+        }),
+    })?;
+    wait.await
+        .map_err(|_| "remote control stopped".to_owned())?
+}
+
+/// Starts a CSC sweep. It owns the serial link until [`stop_spectrum`] is called.
+pub fn start_spectrum() {
+    if SPECTRUM_WANTED.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    SPECTRUM.write().clear();
+    *SPECTRUM_ACTIVE.write() = true;
+    let restore = LIVE
+        .peek()
+        .mode
+        .as_ref()
+        .and_then(|mode| {
+            connected_model()?
+                .control_profile()
+                .and_then(|p| commands(&Action::JumpMode(*mode), &p).ok())
+        })
+        .unwrap_or_else(|| vec!["KEY,S,P".to_owned()]);
+    if let Err(e) = submit(Request::StartSpectrum { restore }) {
+        SPECTRUM_WANTED.store(false, Ordering::SeqCst);
+        *SPECTRUM_ACTIVE.write() = false;
+        push_message(
+            MessageKind::Warning,
+            "control",
+            format!("Starting spectrum failed: {e}"),
+        );
+    }
+}
+
+/// Stops the active CSC sweep; the actor restores the previous mode best-effort.
+pub fn stop_spectrum() {
+    SPECTRUM_WANTED.store(false, Ordering::SeqCst);
 }
 
 /// Reads a level from the reply to `VOL` or `SQL`.
 fn parse_level(command: &str, reply: &str) -> Option<u8> {
-    reply.strip_prefix(command)?.strip_prefix(',')?.trim().parse().ok()
+    reply
+        .strip_prefix(command)?
+        .strip_prefix(',')?
+        .trim()
+        .parse()
+        .ok()
 }
 
 /// Reports a failed control action as a warning.
@@ -160,7 +264,11 @@ fn warn<T>(what: &str, result: Result<T, String>) -> Option<T> {
     match result {
         Ok(v) => Some(v),
         Err(e) => {
-            push_message(MessageKind::Warning, "control", format!("{what} failed: {e}"));
+            push_message(
+                MessageKind::Warning,
+                "control",
+                format!("{what} failed: {e}"),
+            );
             None
         }
     }
@@ -170,7 +278,38 @@ fn warn<T>(what: &str, result: Result<T, String>) -> Option<T> {
 /// Scanner page uses to change the scanner.
 pub async fn perform(action: Action) {
     if let Err(e) = try_perform(&action).await {
-        push_message(MessageKind::Warning, "control", format!("{} failed: {e}", action.label()));
+        push_message(
+            MessageKind::Warning,
+            "control",
+            format!("{} failed: {e}", action.label()),
+        );
+    }
+}
+
+/// Sends one validated virtual-keypad gesture.
+pub async fn press_key(code: &'static str, mode: &'static str) {
+    let result = async {
+        let profile = connected_model()
+            .and_then(|m| m.control_profile())
+            .ok_or_else(|| "Remote control is not supported on this model".to_owned())?;
+        if !profile.keymap.iter().any(|key| key.code == code) {
+            return Err(format!("The {} has no {code} key", profile.model));
+        }
+        if !matches!(mode, "P" | "L" | "H" | "R") {
+            return Err("Invalid keypad gesture".to_owned());
+        }
+        send_command(format!("KEY,{code},{mode}"))
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+    .await;
+    if let Err(e) = result {
+        push_message(
+            MessageKind::Warning,
+            "control",
+            format!("Key press failed: {e}"),
+        );
     }
 }
 
@@ -180,13 +319,17 @@ async fn try_perform(action: &Action) -> Result<(), String> {
         return set_mute(*mute).await;
     }
     let model = connected_model().ok_or("No supported scanner is connected")?;
-    let profile = model.control_profile().ok_or("Remote control is not supported on this model")?;
+    let profile = model
+        .control_profile()
+        .ok_or("Remote control is not supported on this model")?;
     for cmd in commands(action, &profile)? {
         send_command(cmd).await.map_err(|e| match (&e, action) {
             // SPEC: the scanner answers NG when a mode jump or quick search is not allowed right now.
-            (Error::Scanner { .. }, Action::JumpMode(_) | Action::QuickTune { .. } | Action::JumpToTag { .. }) => {
-                "The scanner refused the command (it may be in a menu or have nothing to jump to)".to_owned()
-            }
+            (
+                Error::Scanner { .. },
+                Action::JumpMode(_) | Action::QuickTune { .. } | Action::JumpToTag { .. },
+            ) => "The scanner refused the command (it may be in a menu or have nothing to jump to)"
+                .to_owned(),
             _ => e.to_string(),
         })?;
     }
@@ -217,7 +360,9 @@ async fn set_mute(mute: bool) -> Result<(), String> {
     } else {
         *PRE_MUTE_VOLUME.lock().map_err(|_| "mute state poisoned")?
     };
-    send_command(format!("VOL,{level}")).await.map_err(|e| e.to_string())?;
+    send_command(format!("VOL,{level}"))
+        .await
+        .map_err(|e| e.to_string())?;
     let mut live = LIVE.write();
     live.muted = mute;
     live.volume = Some(level);
@@ -225,8 +370,15 @@ async fn set_mute(mute: bool) -> Result<(), String> {
 }
 
 /// Sends `cmd`, reporting both sides to the UI's TX/RX log.
-fn transfer(link: &mut dyn Scanner, events: &tokio::sync::mpsc::UnboundedSender<Event>, cmd: &str) -> Result<String, Error> {
-    let _ = events.send(Event::Log { tx: true, text: cmd.to_owned() });
+fn transfer(
+    link: &mut dyn Scanner,
+    events: &tokio::sync::mpsc::UnboundedSender<Event>,
+    cmd: &str,
+) -> Result<String, Error> {
+    let _ = events.send(Event::Log {
+        tx: true,
+        text: cmd.to_owned(),
+    });
     let result = link.send(cmd);
     let text = match &result {
         Ok(reply) => reply.clone(),
@@ -241,11 +393,36 @@ fn poll_once(
     link: &mut dyn Scanner,
     events: &tokio::sync::mpsc::UnboundedSender<Event>,
     tick: u32,
+    gps: bool,
+    pwr_status: bool,
 ) -> Result<Event, Error> {
     let started = Instant::now();
     let glg = transfer(link, events, "GLG")?;
-    let pwr = if tick % 2 == 0 { Some(transfer(link, events, "PWR")?) } else { None };
-    Ok(Event::Poll { glg, pwr, latency: started.elapsed() })
+    let pwr = if pwr_status && tick % 2 == 0 {
+        Some(transfer(link, events, "PWR")?)
+    } else {
+        None
+    };
+    let status_every = if DISPLAY_WANTED.load(Ordering::Relaxed) {
+        5
+    } else {
+        LEVEL_EVERY
+    };
+    if tick % status_every == 0 {
+        if let Ok(status) = transfer(link, events, "STS") {
+            let _ = events.send(Event::Status(status));
+        }
+        if gps && tick % LEVEL_EVERY == 0 {
+            if let Ok(gga) = transfer(link, events, "GGA") {
+                let _ = events.send(Event::Gps(gga));
+            }
+        }
+    }
+    Ok(Event::Poll {
+        glg,
+        pwr,
+        latency: started.elapsed(),
+    })
 }
 
 /// Thread body: opens the port, then alternates between queued commands and status polls
@@ -255,6 +432,8 @@ fn run_actor(
     baud: u32,
     requests: mpsc::Receiver<Request>,
     events: tokio::sync::mpsc::UnboundedSender<Event>,
+    gps: bool,
+    pwr_status: bool,
 ) {
     let outcome = (|| -> Result<(), Error> {
         let mut link = open_scanner(&port, baud, Duration::from_secs(2))?;
@@ -264,11 +443,51 @@ fn run_actor(
                 Ok(Request::Command { command, reply }) => {
                     let _ = reply.send(transfer(&mut link, &events, &command));
                 }
-                Ok(Request::Job(job)) => job(&mut link),
+                Ok(Request::Job { program_mode, job }) => {
+                    if program_mode {
+                        let _ = events.send(Event::ProgramMode(true));
+                    }
+                    job(&mut link);
+                    if program_mode {
+                        let _ = events.send(Event::ProgramMode(false));
+                    }
+                }
+                Ok(Request::StartSpectrum { restore }) => {
+                    let _ = events.send(Event::Log {
+                        tx: true,
+                        text: "CSC,ON".to_owned(),
+                    });
+                    let should_stop = || !SPECTRUM_WANTED.load(Ordering::SeqCst);
+                    let mut on_line = |line: String| {
+                        let _ = events.send(Event::Log {
+                            tx: false,
+                            text: line.clone(),
+                        });
+                        if let Ok(point) = parse_csc(&line) {
+                            let _ = events.send(Event::Spectrum(point));
+                        }
+                    };
+                    let stream_error = if let Err(e) =
+                        link.stream("CSC,ON", "CSC,OFF", &should_stop, &mut on_line)
+                    {
+                        let _ = events.send(Event::Log {
+                            tx: false,
+                            text: format!("! spectrum: {e}"),
+                        });
+                        Some(e.to_string())
+                    } else {
+                        None
+                    };
+                    SPECTRUM_WANTED.store(false, Ordering::SeqCst);
+                    for command in restore {
+                        let _ = transfer(&mut link, &events, &command);
+                    }
+                    let _ = events.send(Event::SpectrumStopped(stream_error));
+                }
                 Err(RecvTimeoutError::Timeout) => {
                     tick = tick.wrapping_add(1);
                     // A missed poll is tolerated: the link only counts as lost after several in a row.
-                    match poll_once(&mut link, &events, tick) {
+                    match poll_once(&mut link, &events, tick, gps, pwr_status) {
                         Ok(poll) => {
                             failures = 0;
                             if events.send(poll).is_err() {
@@ -277,7 +496,9 @@ fn run_actor(
                         }
                         Err(e) => {
                             failures += 1;
-                            let _ = events.send(Event::PollFailed { consecutive: failures });
+                            let _ = events.send(Event::PollFailed {
+                                consecutive: failures,
+                            });
                             if failures >= LOST_AFTER {
                                 return Err(e);
                             }
@@ -294,7 +515,10 @@ fn run_actor(
                 Err(RecvTimeoutError::Disconnected) => {
                     // Remote control is being turned off: put the quick keys back first.
                     if let Err(e) = restore_filter_now(&mut DynLink(&mut link)) {
-                        let _ = events.send(Event::Log { tx: false, text: format!("! could not restore the scan filter: {e}") });
+                        let _ = events.send(Event::Log {
+                            tx: false,
+                            text: format!("! could not restore the scan filter: {e}"),
+                        });
                     }
                     return Ok(());
                 }
@@ -327,7 +551,10 @@ fn apply_event(event: Event) -> bool {
                 *LIVE.write() = state;
             }
             let latency_ms = u32::try_from(latency.as_millis()).unwrap_or(u32::MAX);
-            let health = Health { latency_ms, errors: HEALTH.peek().errors };
+            let health = Health {
+                latency_ms,
+                errors: HEALTH.peek().errors,
+            };
             if *HEALTH.peek() != health {
                 *HEALTH.write() = health;
             }
@@ -343,6 +570,45 @@ fn apply_event(event: Event) -> bool {
                 _ => live.squelch = level.or(live.squelch),
             }
         }
+        Event::Status(reply) => {
+            let battery = connected_model()
+                .and_then(|m| m.control_profile())
+                .is_some_and(|p| p.battery_status);
+            match parse_sts(&reply, battery) {
+                Ok(status) => {
+                    let mut live = LIVE.write();
+                    live.signal_bars = status.signal_bars.or(live.signal_bars);
+                    live.squelch_open = status.squelch_open;
+                    *DISPLAY_STATUS.write() = Some(status);
+                }
+                Err(_) => HEALTH.write().errors += 1,
+            }
+        }
+        Event::Gps(reply) => {
+            let quality = reply
+                .split(',')
+                .nth(7)
+                .and_then(|field| field.parse::<u8>().ok());
+            *GPS_FIX.write() = quality.map(|quality| quality > 0);
+        }
+        Event::Spectrum(point) => {
+            let mut points = SPECTRUM.write();
+            if points.len() >= 512 {
+                points.pop_front();
+            }
+            points.push_back(point);
+        }
+        Event::SpectrumStopped(error) => {
+            *SPECTRUM_ACTIVE.write() = false;
+            if let Some(error) = error {
+                push_message(
+                    MessageKind::Warning,
+                    "control",
+                    format!("Spectrum sweep stopped: {error}"),
+                );
+            }
+        }
+        Event::ProgramMode(active) => *PROGRAM_MODE.write() = active,
         Event::PollFailed { consecutive } => {
             HEALTH.write().errors += 1;
             if consecutive >= DEGRADED_AFTER {
@@ -358,23 +624,38 @@ fn apply_event(event: Event) -> bool {
 /// Turns Remote Control on: claims the serial port and starts the actor and its UI relay.
 pub async fn start_remote_control() {
     let Some(info) = SCANNER_INFO.peek().clone() else {
-        push_message(MessageKind::Warning, "control", "No scanner detected".to_string());
+        push_message(
+            MessageKind::Warning,
+            "control",
+            "No scanner detected".to_string(),
+        );
         return;
     };
     let Some(model) = connected_model() else {
-        push_message(MessageKind::Warning, "control", "Unsupported scanner model".to_string());
+        push_message(
+            MessageKind::Warning,
+            "control",
+            "Unsupported scanner model".to_string(),
+        );
         return;
     };
     if model.control_profile().is_none() {
         push_message(
             MessageKind::Warning,
             "control",
-            format!("Remote control is not supported for the {} yet", model.name()),
+            format!(
+                "Remote control is not supported for the {} yet",
+                model.name()
+            ),
         );
         return;
     }
     if DOWNLOAD_ACTIVE.swap(true, Ordering::SeqCst) {
-        push_message(MessageKind::Warning, "control", "The scanner is busy with another operation".to_string());
+        push_message(
+            MessageKind::Warning,
+            "control",
+            "The scanner is busy with another operation".to_string(),
+        );
         return;
     }
 
@@ -385,11 +666,24 @@ pub async fn start_remote_control() {
     *ACTIVITY_STORE.lock().expect("activity") = ActivityLog::default();
     *ACTIVITY.write() = ActivityLog::default();
     *HEALTH.write() = Health::default();
+    *DISPLAY_STATUS.write() = None;
+    *GPS_FIX.write() = None;
+    SPECTRUM.write().clear();
+    *SPECTRUM_ACTIVE.write() = false;
+    *PROGRAM_MODE.write() = false;
     *CONN.write() = ConnState::Connecting;
     *REMOTE_CONTROL.write() = true;
 
     let baud = model.baud_rate();
-    std::thread::spawn(move || run_actor(info.port, baud, requests, events_tx));
+    let gps = model
+        .control_profile()
+        .is_some_and(|profile| profile.gps_status);
+    let pwr_status = model
+        .control_profile()
+        .is_some_and(|profile| profile.pwr_status);
+    std::thread::spawn(move || {
+        run_actor(info.port, baud, requests, events_tx, gps, pwr_status);
+    });
 
     if load_saved_snapshot() {
         *FILTER_ACTIVE.write() = true;
@@ -412,18 +706,35 @@ pub async fn start_remote_control() {
     }
     *LINK.lock().expect("control link") = None;
     *LIVE.write() = LiveState::default();
+    *DISPLAY_STATUS.write() = None;
+    *GPS_FIX.write() = None;
+    SPECTRUM.write().clear();
+    *SPECTRUM_ACTIVE.write() = false;
+    *PROGRAM_MODE.write() = false;
+    DISPLAY_WANTED.store(false, Ordering::SeqCst);
+    SPECTRUM_WANTED.store(false, Ordering::SeqCst);
     *QUICK_KEYS.write() = None;
     *GROUP_KEYS.write() = None;
+    *QUICK_KEY_DRAFT.write() = QuickKeyDraft::default();
     *FILTER_ACTIVE.write() = SNAPSHOT.lock().expect("snapshot").is_some();
-    *CONN.write() = if stop_reason.is_some() { ConnState::Lost } else { ConnState::Off };
+    *CONN.write() = if stop_reason.is_some() {
+        ConnState::Lost
+    } else {
+        ConnState::Off
+    };
     if let Some(reason) = stop_reason {
-        push_message(MessageKind::Warning, "control", format!("Remote control stopped: {reason}"));
+        push_message(
+            MessageKind::Warning,
+            "control",
+            format!("Remote control stopped: {reason}"),
+        );
     }
     *REMOTE_CONTROL.write() = false;
 }
 
 /// Turns Remote Control off. The actor notices, releases the port and reports back.
 pub fn stop_remote_control() {
+    SPECTRUM_WANTED.store(false, Ordering::SeqCst);
     *LINK.lock().expect("control link") = None;
 }
 
@@ -432,6 +743,7 @@ pub fn stop_remote_control() {
 pub struct QuickKeys {
     /// 100 digits indexed by [`models::qsl_position`]: 0 unassigned, 1 on, 2 off.
     pub qsl: String,
+    pub original_qsl: String,
     pub systems: Vec<SystemSummary>,
 }
 
@@ -441,6 +753,7 @@ pub struct GroupKeys {
     pub system: SystemSummary,
     /// 10 digits indexed by [`models::qgl_position`].
     pub qgl: String,
+    pub original_qgl: String,
     pub groups: Vec<GroupSummary>,
 }
 
@@ -449,6 +762,21 @@ pub static QUICK_KEYS: GlobalSignal<Option<QuickKeys>> = Signal::global(|| None)
 
 /// Group quick keys of the system whose groups are expanded.
 pub static GROUP_KEYS: GlobalSignal<Option<GroupKeys>> = Signal::global(|| None);
+
+/// Staged quick-key writes. Nothing here reaches the scanner until Apply is clicked.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct QuickKeyDraft {
+    pub qsl: Option<String>,
+    pub qgl: Vec<(u16, String)>,
+}
+
+impl QuickKeyDraft {
+    pub fn count(&self) -> usize {
+        usize::from(self.qsl.is_some()) + self.qgl.len()
+    }
+}
+
+pub static QUICK_KEY_DRAFT: GlobalSignal<QuickKeyDraft> = Signal::global(QuickKeyDraft::default);
 
 /// True while a temporary scan filter is in place and can be restored.
 pub static FILTER_ACTIVE: GlobalSignal<bool> = Signal::global(|| false);
@@ -550,9 +878,14 @@ fn restore_filter_now(link: &mut DynLink) -> Result<(), Error> {
 
 /// Reads the system quick keys from the scanner. This briefly leaves scan mode.
 pub async fn refresh_quick_keys() {
-    let result = run_job(|link| {
+    let result = run_job(true, |link| {
         let keys = models::with_program_mode(link, |link| {
-            Ok(QuickKeys { qsl: models::read_qsl(link)?, systems: models::read_system_summaries(link)? })
+            let qsl = models::read_qsl(link)?;
+            Ok(QuickKeys {
+                original_qsl: qsl.clone(),
+                qsl,
+                systems: models::read_system_summaries(link)?,
+            })
         })?;
         resume_scanning(link);
         Ok(keys)
@@ -561,6 +894,7 @@ pub async fn refresh_quick_keys() {
     if let Some(keys) = warn("Reading quick keys", result) {
         // A group list from before the refresh may no longer match the scanner.
         *GROUP_KEYS.write() = None;
+        *QUICK_KEY_DRAFT.write() = QuickKeyDraft::default();
         *QUICK_KEYS.write() = Some(keys);
     }
 }
@@ -568,10 +902,12 @@ pub async fn refresh_quick_keys() {
 /// Reads the groups and group quick keys of one system.
 pub async fn load_group_keys(system: SystemSummary) {
     let sys = system.clone();
-    let result = run_job(move |link| {
+    let result = run_job(true, move |link| {
         let keys = models::with_program_mode(link, |link| {
+            let original_qgl = models::read_qgl(link, sys.index)?;
             Ok(GroupKeys {
-                qgl: models::read_qgl(link, sys.index)?,
+                qgl: original_qgl.clone(),
+                original_qgl,
                 groups: models::read_group_summaries(link, sys.index)?,
                 system: sys,
             })
@@ -580,49 +916,84 @@ pub async fn load_group_keys(system: SystemSummary) {
         Ok(keys)
     })
     .await;
-    if let Some(keys) = warn("Reading groups", result) {
+    if let Some(mut keys) = warn("Reading groups", result) {
+        if let Some((_, staged)) = QUICK_KEY_DRAFT
+            .peek()
+            .qgl
+            .iter()
+            .find(|(i, _)| *i == keys.system.index.0)
+        {
+            keys.qgl.clone_from(staged);
+        }
         *GROUP_KEYS.write() = Some(keys);
     }
 }
 
-/// Turns a system quick key on or off.
-pub async fn toggle_system_key(key: u8) {
+/// Stages a system quick-key change locally.
+pub fn toggle_system_key(key: u8) {
     let position = models::qsl_position(key);
-    let result = run_job(move |link| {
-        let digits = models::with_program_mode(link, |link| {
-            let digits = toggled(&models::read_qsl(link)?, position);
-            models::write_qsl(link, &digits)?;
-            Ok(digits)
-        })?;
-        resume_scanning(link);
-        Ok(digits)
-    })
-    .await;
-    if let Some(digits) = warn("Changing quick key", result) {
-        if let Some(keys) = QUICK_KEYS.write().as_mut() {
-            keys.qsl = digits;
-        }
+    if let Some(keys) = QUICK_KEYS.write().as_mut() {
+        keys.qsl = toggled(&keys.qsl, position);
+        QUICK_KEY_DRAFT.write().qsl = (keys.qsl != keys.original_qsl).then(|| keys.qsl.clone());
     }
 }
 
-/// Turns a group quick key of the expanded system on or off.
-pub async fn toggle_group_key(system: crate::database::Index, key: u8) {
+/// Stages a group quick-key change locally.
+pub fn toggle_group_key(system: crate::database::Index, key: u8) {
     let position = models::qgl_position(key);
-    let result = run_job(move |link| {
-        let digits = models::with_program_mode(link, |link| {
-            let digits = toggled(&models::read_qgl(link, system)?, position);
-            models::write_qgl(link, system, &digits)?;
-            Ok(digits)
+    let mut group_keys = GROUP_KEYS.write();
+    let Some(keys) = group_keys.as_mut() else {
+        return;
+    };
+    keys.qgl = toggled(&keys.qgl, position);
+    let mut draft = QUICK_KEY_DRAFT.write();
+    draft.qgl.retain(|(i, _)| *i != system.0);
+    if keys.qgl != keys.original_qgl {
+        draft.qgl.push((system.0, keys.qgl.clone()));
+    }
+}
+
+/// Writes every staged quick-key change in one Program Mode session.
+pub async fn apply_quick_keys() {
+    let draft = QUICK_KEY_DRAFT.peek().clone();
+    if draft.count() == 0 {
+        return;
+    }
+    let applied = draft.clone();
+    let result = run_job(true, move |link| {
+        models::with_program_mode(link, |link| {
+            if let Some(qsl) = &applied.qsl {
+                models::write_qsl(link, qsl)?;
+            }
+            for (system, qgl) in &applied.qgl {
+                models::write_qgl(link, crate::database::Index(*system), qgl)?;
+            }
+            Ok(())
         })?;
         resume_scanning(link);
-        Ok(digits)
+        Ok(())
     })
     .await;
-    if let Some(digits) = warn("Changing group quick key", result) {
-        if let Some(keys) = GROUP_KEYS.write().as_mut() {
-            keys.qgl = digits;
+    if warn("Applying quick keys", result).is_some() {
+        if let Some(keys) = QUICK_KEYS.write().as_mut() {
+            keys.original_qsl.clone_from(&keys.qsl);
         }
+        if let Some(keys) = GROUP_KEYS.write().as_mut() {
+            keys.original_qgl.clone_from(&keys.qgl);
+        }
+        *QUICK_KEY_DRAFT.write() = QuickKeyDraft::default();
     }
+}
+
+/// Drops staged quick-key changes without touching the scanner.
+pub fn discard_quick_key_changes() {
+    if let Some(keys) = QUICK_KEYS.write().as_mut() {
+        keys.qsl.clone_from(&keys.original_qsl);
+    }
+    if let Some(keys) = GROUP_KEYS.write().as_mut() {
+        keys.qgl.clone_from(&keys.original_qgl);
+    }
+    *QUICK_KEY_DRAFT.write() = QuickKeyDraft::default();
 }
 
 /// Temporarily scans only system quick key `key` — and, if `group` is given, only that group
@@ -630,7 +1001,7 @@ pub async fn toggle_group_key(system: crate::database::Index, key: u8) {
 pub async fn scan_only(system: SystemSummary, group: Option<u8>) {
     let Some(key) = system.quick_key else { return };
     let sys_index = system.index;
-    let result = run_job(move |link| {
+    let result = run_job(true, move |link| {
         let (qsl, unaffected) = models::with_program_mode(link, |link| {
             let before_qsl = models::read_qsl(link)?;
             let before_qgl = match group {
@@ -638,10 +1009,15 @@ pub async fn scan_only(system: SystemSummary, group: Option<u8>) {
                 None => None,
             };
             // Keep the earliest settings if a filter is already active, so Restore goes back to the real ones.
-            let mut snapshot = SNAPSHOT.lock().expect("snapshot").clone().unwrap_or(FilterSnapshot {
-                qsl: before_qsl.clone(),
-                qgl: Vec::new(),
-            });
+            let mut snapshot =
+                SNAPSHOT
+                    .lock()
+                    .expect("snapshot")
+                    .clone()
+                    .unwrap_or(FilterSnapshot {
+                        qsl: before_qsl.clone(),
+                        qgl: Vec::new(),
+                    });
             if let Some(q) = &before_qgl {
                 if !snapshot.qgl.iter().any(|(i, _)| *i == sys_index.0) {
                     snapshot.qgl.push((sys_index.0, q.clone()));
@@ -678,7 +1054,7 @@ pub async fn scan_only(system: SystemSummary, group: Option<u8>) {
 
 /// Restores the quick keys saved before the temporary scan filter.
 pub async fn restore_filter() {
-    let result = run_job(|link| restore_filter_now(link)).await;
+    let result = run_job(true, |link| restore_filter_now(link)).await;
     if warn("Restore", result).is_some() {
         *FILTER_ACTIVE.write() = false;
         *GROUP_KEYS.write() = None;

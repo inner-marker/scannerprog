@@ -8,6 +8,48 @@ use std::time::{Duration, Instant};
 
 use super::Capabilities;
 
+/// Remote-command dialect used by the Scanner page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Family {
+    EarlyComma,
+    Gen1,
+    Xt,
+}
+
+/// One physical key exposed by the virtual remote.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KeyDef {
+    pub code: &'static str,
+    pub label: &'static str,
+}
+
+/// Parsed LCD and indicator data from an `STS` reply.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DisplayStatus {
+    pub large: Vec<bool>,
+    pub lines: Vec<DisplayLine>,
+    pub battery_low: Option<bool>,
+    pub weather_alert: bool,
+    pub signal_bars: Option<u8>,
+    pub squelch_open: bool,
+    pub muted: bool,
+}
+
+/// One 16-character scanner display line and its display attributes.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DisplayLine {
+    pub text: String,
+    pub modes: String,
+}
+
+/// One sample emitted by `CSC`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SpectrumPoint {
+    pub rssi: u16,
+    pub freq_hz: u64,
+    pub squelch_open: bool,
+}
+
 /// Every feature the Scanner page can bind a control to. Some are only listed so the support table is complete.
 #[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -71,6 +113,12 @@ pub struct ControlProfile {
     pub service_banks: &'static [(&'static str, &'static str)],
     /// True if the model accepts `POF`.
     pub power_off: bool,
+    pub family: Family,
+    pub keymap: &'static [KeyDef],
+    pub battery_status: bool,
+    pub spectrum: bool,
+    pub gps_status: bool,
+    pub pwr_status: bool,
 }
 
 impl ControlProfile {
@@ -79,28 +127,227 @@ impl ControlProfile {
         use Capability::*;
         use Support::*;
         match cap {
-            SignalMeter | Volume | Squelch | ModeSwitch | ToneOut | QuickTune | JumpToTag => Native,
+            SignalMeter if self.pwr_status => Native,
+            SignalMeter => Unsupported("This model has no PWR signal-meter command."),
+            Volume | Squelch | QuickTune => Native,
+            ModeSwitch | ToneOut if self.family != Family::EarlyComma => Native,
+            ModeSwitch | ToneOut => {
+                Unsupported("This model has no safe direct command for changing to that mode.")
+            }
+            JumpToTag if self.family == Family::Xt => Native,
+            JumpToTag => Unsupported("Number tags are not supported by this model."),
             Hold | StepNext | StepPrev | Avoid | ResumeScan | Mute => Emulated,
             QuickKeysSystems | QuickKeysGroups => NeedsProgramMode,
-            HoldAtLevel => Unsupported("Only HomePatrol and SDS scanners can hold at a chosen level."),
+            HoldAtLevel => {
+                Unsupported("Only HomePatrol and SDS scanners can hold at a chosen level.")
+            }
             Discovery => Unsupported("Discovery modes exist only on HomePatrol and SDS scanners."),
             Waterfall => Unsupported("A waterfall is only available on SDS scanners."),
             Highway => Unsupported("Highway Patrol mode exists only on the BCT8."),
-            QuickKeysFavorites => Unsupported("Favorites Lists exist only on HomePatrol and SDS scanners."),
+            QuickKeysFavorites => {
+                Unsupported("Favorites Lists exist only on HomePatrol and SDS scanners.")
+            }
             QuickKeysBanks => Unsupported("Quick-key banks A–E exist only on the BCT8."),
             PowerOff if self.power_off => Native,
             PowerOff => Unsupported("This model has no remote power-off command."),
-            Spectrum => Planned("Spectrum sweep (CSC) is not implemented yet."),
-            LcdMirror => Planned("The LCD mirror is not implemented yet."),
-            Keypad => Planned("The virtual keypad is not implemented yet."),
-            Battery => Planned("Battery status is not implemented yet."),
-            WeatherAlert => Planned("Weather alert status is not implemented yet."),
+            Spectrum if self.spectrum => Native,
+            Spectrum => Unsupported("This scanner cannot stream sweep signal data."),
+            LcdMirror | Keypad => Native,
+            Battery if self.battery_status => Native,
+            Battery => Unsupported("This mobile scanner has no battery status."),
+            WeatherAlert => Native,
         }
     }
 }
 
+const HANDHELD_KEYS: [KeyDef; 21] = [
+    KeyDef {
+        code: "M",
+        label: "Menu",
+    },
+    KeyDef {
+        code: "F",
+        label: "Func",
+    },
+    KeyDef {
+        code: "H",
+        label: "Hold",
+    },
+    KeyDef {
+        code: "S",
+        label: "Scan",
+    },
+    KeyDef {
+        code: "L",
+        label: "L/O",
+    },
+    KeyDef {
+        code: "1",
+        label: "1",
+    },
+    KeyDef {
+        code: "2",
+        label: "2",
+    },
+    KeyDef {
+        code: "3",
+        label: "3",
+    },
+    KeyDef {
+        code: "4",
+        label: "4",
+    },
+    KeyDef {
+        code: "5",
+        label: "5",
+    },
+    KeyDef {
+        code: "6",
+        label: "6",
+    },
+    KeyDef {
+        code: "7",
+        label: "7",
+    },
+    KeyDef {
+        code: "8",
+        label: "8",
+    },
+    KeyDef {
+        code: "9",
+        label: "9",
+    },
+    KeyDef {
+        code: ".",
+        label: "./No",
+    },
+    KeyDef {
+        code: "0",
+        label: "0",
+    },
+    KeyDef {
+        code: "E",
+        label: "E/Yes",
+    },
+    KeyDef {
+        code: "^",
+        label: "VFO",
+    },
+    KeyDef {
+        code: "<",
+        label: "VFO left",
+    },
+    KeyDef {
+        code: ">",
+        label: "VFO right",
+    },
+    KeyDef {
+        code: "P",
+        label: "Power/Light",
+    },
+];
+
+const MOBILE_KEYS: [KeyDef; 24] = [
+    KeyDef {
+        code: "P",
+        label: "Pri",
+    },
+    KeyDef {
+        code: "W",
+        label: "WX",
+    },
+    KeyDef {
+        code: "G",
+        label: "GPS",
+    },
+    KeyDef {
+        code: "M",
+        label: "Menu",
+    },
+    KeyDef {
+        code: "F",
+        label: "Func/VFO",
+    },
+    KeyDef {
+        code: "H",
+        label: "Hold",
+    },
+    KeyDef {
+        code: "S",
+        label: "Scan",
+    },
+    KeyDef {
+        code: "L",
+        label: "L/O",
+    },
+    KeyDef {
+        code: "1",
+        label: "1",
+    },
+    KeyDef {
+        code: "2",
+        label: "2",
+    },
+    KeyDef {
+        code: "3",
+        label: "3",
+    },
+    KeyDef {
+        code: "4",
+        label: "4",
+    },
+    KeyDef {
+        code: "5",
+        label: "5",
+    },
+    KeyDef {
+        code: "6",
+        label: "6",
+    },
+    KeyDef {
+        code: "7",
+        label: "7",
+    },
+    KeyDef {
+        code: "8",
+        label: "8",
+    },
+    KeyDef {
+        code: "9",
+        label: "9",
+    },
+    KeyDef {
+        code: ".",
+        label: "./No",
+    },
+    KeyDef {
+        code: "0",
+        label: "0",
+    },
+    KeyDef {
+        code: "E",
+        label: "E/Yes",
+    },
+    KeyDef {
+        code: "Q",
+        label: "Squelch",
+    },
+    KeyDef {
+        code: "V",
+        label: "Volume",
+    },
+    KeyDef {
+        code: "<",
+        label: "VFO left",
+    },
+    KeyDef {
+        code: ">",
+        label: "VFO right",
+    },
+];
+
 /// Service banks of the BCD325P2 and BCD396XT.
-const BANKS_WITH_MILITARY: [(&str, &str); 12] = [
+pub const BANKS_WITH_MILITARY: [(&str, &str); 12] = [
     ("Public Safety", "PublicSafety"),
     ("News", "News"),
     ("HAM", "HAM"),
@@ -116,7 +363,7 @@ const BANKS_WITH_MILITARY: [(&str, &str); 12] = [
 ];
 
 /// The BC346XT has no Military Air bank.
-const BANKS_WITHOUT_MILITARY: [(&str, &str); 11] = [
+pub const BANKS_WITHOUT_MILITARY: [(&str, &str); 11] = [
     ("Public Safety", "PublicSafety"),
     ("News", "News"),
     ("HAM", "HAM"),
@@ -138,13 +385,26 @@ pub struct XtVariant {
     pub squelch_max: u8,
     pub military_air: bool,
     pub power_off: bool,
+    pub battery_status: bool,
 }
 
 impl XtVariant {
     /// BCD325P2, BCD396XT: VOL 0–15, SQL 0–15, with `POF`.
-    pub const HANDHELD: XtVariant = XtVariant { volume_max: 15, squelch_max: 15, military_air: true, power_off: true };
+    pub const HANDHELD: XtVariant = XtVariant {
+        volume_max: 15,
+        squelch_max: 15,
+        military_air: true,
+        power_off: true,
+        battery_status: true,
+    };
     /// BCD996XT, BCD996P2: VOL 0–29, SQL 0–19, no `POF`.
-    pub const MOBILE: XtVariant = XtVariant { volume_max: 29, squelch_max: 19, military_air: true, power_off: false };
+    pub const MOBILE: XtVariant = XtVariant {
+        volume_max: 29,
+        squelch_max: 19,
+        military_air: true,
+        power_off: false,
+        battery_status: false,
+    };
 }
 
 /// Profile for the XT/P2 family. These models share one command set and differ only in data.
@@ -155,10 +415,126 @@ pub fn xt_profile(model: &'static str, caps: &Capabilities, v: &XtVariant) -> Co
         volume_range: Some((0, v.volume_max)),
         squelch_range: Some((0, v.squelch_max)),
         freq_ranges: caps.freq_ranges,
-        service_banks: if v.military_air { &BANKS_WITH_MILITARY } else { &BANKS_WITHOUT_MILITARY },
+        service_banks: if v.military_air {
+            &BANKS_WITH_MILITARY
+        } else {
+            &BANKS_WITHOUT_MILITARY
+        },
         // SPEC: POF is listed for the handhelds only; the BCD996 specs have no power-off command.
         power_off: v.power_off,
+        family: Family::Xt,
+        keymap: if v.battery_status {
+            &HANDHELD_KEYS
+        } else {
+            &MOBILE_KEYS
+        },
+        battery_status: v.battery_status,
+        spectrum: true,
+        gps_status: !v.battery_status,
+        pwr_status: true,
     }
+}
+
+/// Profile for the earlier comma-command scanners added in Phase 2.
+pub fn comma_profile(
+    model: &'static str,
+    caps: &Capabilities,
+    family: Family,
+    handheld: bool,
+    spectrum: bool,
+    power_off: bool,
+    service_banks: &'static [(&'static str, &'static str)],
+) -> ControlProfile {
+    ControlProfile {
+        model,
+        volume_range: Some(if handheld { (0, 15) } else { (0, 29) }),
+        squelch_range: Some(if handheld { (0, 15) } else { (0, 19) }),
+        freq_ranges: caps.freq_ranges,
+        service_banks,
+        power_off,
+        family,
+        keymap: if handheld {
+            &HANDHELD_KEYS
+        } else {
+            &MOBILE_KEYS
+        },
+        battery_status: handheld,
+        spectrum,
+        gps_status: false,
+        pwr_status: family != Family::EarlyComma,
+    }
+}
+
+/// Parses a variable-length `STS` reply.
+pub fn parse_sts(reply: &str, battery_field: bool) -> Result<DisplayStatus, super::Error> {
+    let fields: Vec<&str> = reply.trim_end_matches(['\r', '\n']).split(',').collect();
+    if fields.first() != Some(&"STS") {
+        return Err(super::Error::UnexpectedReply {
+            expected: "STS",
+            reply: reply.to_owned(),
+        });
+    }
+    let form = fields.get(1).copied().unwrap_or_default();
+    if !(4..=8).contains(&form.len()) {
+        return Err(super::Error::BadValue {
+            cmd: "STS",
+            pos: 1,
+            value: form.to_owned(),
+        });
+    }
+    let tail = 2 + form.len() * 2;
+    if fields.len() < tail + 9 {
+        return Err(super::Error::MissingField {
+            cmd: "STS",
+            pos: tail + 8,
+        });
+    }
+    let lines = (0..form.len())
+        .map(|i| DisplayLine {
+            text: fields[2 + i * 2].trim_end().to_owned(),
+            modes: fields[3 + i * 2].to_owned(),
+        })
+        .collect();
+    Ok(DisplayStatus {
+        large: form.bytes().map(|b| b == b'1').collect(),
+        lines,
+        battery_low: battery_field.then(|| fields[tail + 2] == "1"),
+        weather_alert: !matches!(fields[tail + 3], "" | "0"),
+        signal_bars: fields[tail + 6].parse::<u8>().ok().map(|v| v.min(5)),
+        squelch_open: fields[tail] == "1",
+        muted: fields[tail + 1] == "1",
+    })
+}
+
+/// Parses one `CSC,<RSSI>,<FRQ>,<SQL>` stream line.
+pub fn parse_csc(reply: &str) -> Result<SpectrumPoint, super::Error> {
+    let mut fields = reply.trim_end_matches(['\r', '\n']).split(',');
+    if fields.next() != Some("CSC") {
+        return Err(super::Error::UnexpectedReply {
+            expected: "CSC",
+            reply: reply.to_owned(),
+        });
+    }
+    let parse = |pos, value: Option<&str>| {
+        let value = value.ok_or(super::Error::MissingField { cmd: "CSC", pos })?;
+        value.parse::<u64>().map_err(|_| super::Error::BadValue {
+            cmd: "CSC",
+            pos,
+            value: value.to_owned(),
+        })
+    };
+    let rssi = u16::try_from(parse(1, fields.next())?).map_err(|_| super::Error::BadValue {
+        cmd: "CSC",
+        pos: 1,
+        value: reply.to_owned(),
+    })?;
+    let freq_hz = parse(2, fields.next())? * 100;
+    let squelch_open = parse(3, fields.next())? == 1;
+    Ok(SpectrumPoint {
+        rssi,
+        freq_hz,
+        squelch_open,
+    })
 }
 
 /// The scanner's weather scan modes: `(label, JPM index)`.
@@ -186,7 +562,10 @@ pub const NOAA_CHANNELS: [(&str, f64); 7] = [
 
 /// The NOAA channel label for a frequency in MHz, if it is one of the seven.
 pub fn noaa_label(mhz: f64) -> Option<&'static str> {
-    NOAA_CHANNELS.iter().find(|(_, f)| (f - mhz).abs() < 0.0005).map(|(l, _)| *l)
+    NOAA_CHANNELS
+        .iter()
+        .find(|(_, f)| (f - mhz).abs() < 0.0005)
+        .map(|(l, _)| *l)
 }
 
 /// What the scanner is doing.
@@ -237,7 +616,10 @@ fn text(s: &str) -> Option<String> {
 impl LiveState {
     /// True when the scanner reports no reception details at all.
     pub fn is_idle(&self) -> bool {
-        self.freq_hz.is_none() && self.tgid.is_none() && self.system.is_none() && self.channel.is_none()
+        self.freq_hz.is_none()
+            && self.tgid.is_none()
+            && self.system.is_none()
+            && self.channel.is_none()
     }
 
     /// The reception frequency in MHz.
@@ -249,7 +631,10 @@ impl LiveState {
     pub fn apply_glg(&mut self, reply: &str) -> Result<(), super::Error> {
         let mut f = reply.trim_end().split(',');
         if f.next() != Some("GLG") {
-            return Err(super::Error::UnexpectedReply { expected: "GLG", reply: reply.to_owned() });
+            return Err(super::Error::UnexpectedReply {
+                expected: "GLG",
+                reply: reply.to_owned(),
+            });
         }
         // SPEC: the empty reply is printed with different comma counts, so missing fields are empty.
         let mut next = || f.next().unwrap_or("");
@@ -268,7 +653,10 @@ impl LiveState {
         self.freq_hz = None;
         self.tgid = None;
         if frq.contains('.') {
-            self.freq_hz = frq.parse::<f64>().ok().map(|m| (m * 1_000_000.0).round() as u64);
+            self.freq_hz = frq
+                .parse::<f64>()
+                .ok()
+                .map(|m| (m * 1_000_000.0).round() as u64);
         } else if frq.len() >= 6 && frq.bytes().all(|b| b.is_ascii_digit()) {
             self.freq_hz = frq.parse::<u64>().ok().map(|v| v * 100);
         } else if !frq.is_empty() {
@@ -307,7 +695,7 @@ impl LiveState {
 
 /// Maps RSSI 0–1023 to 0–5 bars.
 pub fn bars_from_rssi(rssi: u16) -> u8 {
-    (rssi.min(1023) / 205).min(5) as u8
+    ((u32::from(rssi.min(1023)) * 5) / 1023) as u8
 }
 
 /// Universal UI intents. The driver turns these into wire commands.
@@ -324,8 +712,14 @@ pub enum Action {
     /// Handled by the session (it needs the volume to restore); never reaches [`commands`].
     SetMute(bool),
     JumpMode(ScanMode),
-    QuickTune { freq_hz: u64, modulation: Option<String> },
-    JumpToTag { sys: Option<u16>, chan: Option<u16> },
+    QuickTune {
+        freq_hz: u64,
+        modulation: Option<String>,
+    },
+    JumpToTag {
+        sys: Option<u16>,
+        chan: Option<u16>,
+    },
     PowerOff,
 }
 
@@ -360,23 +754,39 @@ pub fn commands(action: &Action, profile: &ControlProfile) -> Result<Vec<String>
         Action::StepNext => key('>'),
         Action::StepPrev => key('<'),
         Action::SetVolume(v) => {
-            let (lo, hi) = profile.volume_range.ok_or("This model has no remote volume.")?;
+            let (lo, hi) = profile
+                .volume_range
+                .ok_or("This model has no remote volume.")?;
             vec![format!("VOL,{}", (*v).clamp(lo, hi))]
         }
         Action::SetSquelch(v) => {
-            let (lo, hi) = profile.squelch_range.ok_or("This model has no remote squelch.")?;
+            let (lo, hi) = profile
+                .squelch_range
+                .ok_or("This model has no remote squelch.")?;
             vec![format!("SQL,{}", (*v).clamp(lo, hi))]
         }
         Action::SetMute(_) => return Err("Mute is handled by the session.".into()),
+        Action::JumpMode(_) if profile.family == Family::EarlyComma => {
+            return Err("This model's mode changes require physical-key sequences that are not safely automatable.".into());
+        }
         Action::JumpMode(ScanMode::Service(bank)) => vec![format!("JPM,SVC_MODE,{bank}")],
         Action::JumpMode(ScanMode::Custom) => vec!["JPM,CTM_MODE,RESERVE".into()],
         Action::JumpMode(ScanMode::CloseCall) => vec!["JPM,CC_MODE,RESERVE".into()],
         Action::JumpMode(ScanMode::Weather(mode)) => vec![format!("JPM,WX_MODE,{mode}")],
         Action::JumpMode(ScanMode::ToneOut) => vec!["JPM,FTO_MODE,RESERVE".into()],
-        Action::JumpMode(ScanMode::QuickSearch) => return Err("Use Quick Tune to enter Quick Search.".into()),
-        Action::QuickTune { freq_hz, modulation } => {
+        Action::JumpMode(ScanMode::QuickSearch) => {
+            return Err("Use Quick Tune to enter Quick Search.".into());
+        }
+        Action::QuickTune {
+            freq_hz,
+            modulation,
+        } => {
             let wire = u32::try_from(freq_hz / 100).map_err(|_| "Frequency is out of range.")?;
-            if !profile.freq_ranges.iter().any(|(lo, hi)| (*lo..=*hi).contains(&wire)) {
+            if !profile
+                .freq_ranges
+                .iter()
+                .any(|(lo, hi)| (*lo..=*hi).contains(&wire))
+            {
                 return Err(format!(
                     "{:.4} MHz is outside the {} receive range.",
                     *freq_hz as f64 / 1e6,
@@ -388,6 +798,9 @@ pub fn commands(action: &Action, profile: &ControlProfile) -> Result<Vec<String>
             vec![format!("QSH,{wire:08},,{modulation}")]
         }
         Action::JumpToTag { sys, chan } => {
+            if profile.family != Family::Xt {
+                return Err("Number tags are not supported by this model.".into());
+            }
             if sys.is_none() && chan.is_none() {
                 return Err("Enter a system tag, a channel tag, or both.".into());
             }
@@ -425,7 +838,10 @@ pub struct ActivityEntry {
 impl ActivityEntry {
     /// True if `s` is the same reception (same place on the same system) as this entry.
     fn same_as(&self, s: &LiveState) -> bool {
-        self.channel == s.channel && self.freq_hz == s.freq_hz && self.tgid == s.tgid && self.system == s.system
+        self.channel == s.channel
+            && self.freq_hz == s.freq_hz
+            && self.tgid == s.tgid
+            && self.system == s.system
     }
 }
 
@@ -483,7 +899,8 @@ impl ActivityLog {
     /// The log as CSV (oldest first).
     pub fn to_csv(&self) -> String {
         let q = |s: &str| format!("\"{}\"", s.replace('"', "\"\""));
-        let mut out = String::from("Time,System,Group,Channel,Frequency MHz,TGID,Duration s,Peak bars\n");
+        let mut out =
+            String::from("Time,System,Group,Channel,Frequency MHz,TGID,Duration s,Peak bars\n");
         for e in &self.entries {
             out.push_str(&format!(
                 "{},{},{},{},{},{},{},{}\n",
@@ -491,9 +908,13 @@ impl ActivityLog {
                 q(e.system.as_deref().unwrap_or("")),
                 q(e.group.as_deref().unwrap_or("")),
                 q(e.channel.as_deref().unwrap_or("")),
-                e.freq_hz.map(|f| format!("{:.4}", f as f64 / 1e6)).unwrap_or_default(),
+                e.freq_hz
+                    .map(|f| format!("{:.4}", f as f64 / 1e6))
+                    .unwrap_or_default(),
                 q(e.tgid.as_deref().unwrap_or("")),
-                e.duration.map(|d| d.as_secs().to_string()).unwrap_or_default(),
+                e.duration
+                    .map(|d| d.as_secs().to_string())
+                    .unwrap_or_default(),
                 e.peak_bars,
             ));
         }
@@ -515,11 +936,22 @@ mod tests {
     #[test]
     fn parses_glg() {
         let mut s = LiveState::default();
-        s.apply_glg("GLG,4625000,FM,0,0,Fire,Dispatch,Main,1,0,12,3,NONE").unwrap();
-        assert_eq!((s.system.as_deref(), s.group.as_deref(), s.channel.as_deref()), (Some("Fire"), Some("Dispatch"), Some("Main")));
+        s.apply_glg("GLG,4625000,FM,0,0,Fire,Dispatch,Main,1,0,12,3,NONE")
+            .unwrap();
+        assert_eq!(
+            (
+                s.system.as_deref(),
+                s.group.as_deref(),
+                s.channel.as_deref()
+            ),
+            (Some("Fire"), Some("Dispatch"), Some("Main"))
+        );
         assert!(s.squelch_open);
         assert_eq!(s.freq_hz, Some(462_500_000));
-        assert_eq!((s.system_tag.as_deref(), s.channel_tag.as_deref()), (Some("12"), Some("3")));
+        assert_eq!(
+            (s.system_tag.as_deref(), s.channel_tag.as_deref()),
+            (Some("12"), Some("3"))
+        );
         assert_eq!(s.sub_audio, None);
     }
 
@@ -527,7 +959,8 @@ mod tests {
     #[test]
     fn glg_sub_audio_and_decimal_frequency() {
         let mut s = LiveState::default();
-        s.apply_glg("GLG,162.5500,NFM,0,23,WX,,,1,0,NONE,NONE,293").unwrap();
+        s.apply_glg("GLG,162.5500,NFM,0,23,WX,,,1,0,NONE,NONE,293")
+            .unwrap();
         assert_eq!(s.freq_hz, Some(162_550_000));
         assert_eq!(s.sub_audio.as_deref(), Some("Tone 23 · NAC 293"));
     }
@@ -550,10 +983,10 @@ mod tests {
         assert!(LiveState::default().apply_glg("ERR").is_err());
         let mut s = LiveState::default();
         s.apply_pwr("PWR,1023,4625000");
-        assert_eq!(s.signal_bars, Some(4));
+        assert_eq!(s.signal_bars, Some(5));
         s.apply_pwr("PWR,0,0");
         assert_eq!(s.signal_bars, Some(0));
-        assert_eq!(bars_from_rssi(5000), 4);
+        assert_eq!(bars_from_rssi(5000), 5);
     }
 
     /// Weather frequencies map to their WX channel and others do not.
@@ -572,17 +1005,41 @@ mod tests {
         assert_eq!(one(Action::Hold), ["KEY,H,P"]);
         assert_eq!(one(Action::StepNext), ["KEY,>,P"]);
         assert_eq!(one(Action::JumpMode(ScanMode::Scan)), ["KEY,S,P"]);
-        assert_eq!(one(Action::JumpMode(ScanMode::Service("HAM"))), ["JPM,SVC_MODE,HAM"]);
-        assert_eq!(one(Action::JumpMode(ScanMode::Weather("SAME_2"))), ["JPM,WX_MODE,SAME_2"]);
-        assert_eq!(one(Action::SetVolume(99)), ["VOL,15"]);
-        assert_eq!(one(Action::JumpToTag { sys: Some(12), chan: None }), ["JNT,12,"]);
-        assert_eq!(one(Action::JumpToTag { sys: None, chan: Some(3) }), ["JNT,,3"]);
         assert_eq!(
-            one(Action::QuickTune { freq_hz: 462_562_500, modulation: Some("AUTO".into()) }),
+            one(Action::JumpMode(ScanMode::Service("HAM"))),
+            ["JPM,SVC_MODE,HAM"]
+        );
+        assert_eq!(
+            one(Action::JumpMode(ScanMode::Weather("SAME_2"))),
+            ["JPM,WX_MODE,SAME_2"]
+        );
+        assert_eq!(one(Action::SetVolume(99)), ["VOL,15"]);
+        assert_eq!(
+            one(Action::JumpToTag {
+                sys: Some(12),
+                chan: None
+            }),
+            ["JNT,12,"]
+        );
+        assert_eq!(
+            one(Action::JumpToTag {
+                sys: None,
+                chan: Some(3)
+            }),
+            ["JNT,,3"]
+        );
+        assert_eq!(
+            one(Action::QuickTune {
+                freq_hz: 462_562_500,
+                modulation: Some("AUTO".into())
+            }),
             ["QSH,04625625,,"]
         );
         assert_eq!(
-            one(Action::QuickTune { freq_hz: 162_400_000, modulation: Some("NFM".into()) }),
+            one(Action::QuickTune {
+                freq_hz: 162_400_000,
+                modulation: Some("NFM".into())
+            }),
             ["QSH,01624000,,NFM"]
         );
     }
@@ -591,9 +1048,36 @@ mod tests {
     #[test]
     fn refuses_bad_input() {
         let p = profile();
-        assert!(commands(&Action::QuickTune { freq_hz: 600_000_000, modulation: None }, &p).is_err());
-        assert!(commands(&Action::JumpToTag { sys: None, chan: None }, &p).is_err());
-        assert!(commands(&Action::JumpToTag { sys: Some(1000), chan: None }, &p).is_err());
+        assert!(
+            commands(
+                &Action::QuickTune {
+                    freq_hz: 600_000_000,
+                    modulation: None
+                },
+                &p
+            )
+            .is_err()
+        );
+        assert!(
+            commands(
+                &Action::JumpToTag {
+                    sys: None,
+                    chan: None
+                },
+                &p
+            )
+            .is_err()
+        );
+        assert!(
+            commands(
+                &Action::JumpToTag {
+                    sys: Some(1000),
+                    chan: None
+                },
+                &p
+            )
+            .is_err()
+        );
         assert!(commands(&Action::SetMute(true), &p).is_err());
     }
 
@@ -603,13 +1087,83 @@ mod tests {
         for m in models::all() {
             assert!(m.control_profile().is_some(), "{}", m.name());
         }
-        let banks = |n: &str| models::find(n).unwrap().control_profile().unwrap().service_banks.len();
+        let banks = |n: &str| {
+            models::find(n)
+                .unwrap()
+                .control_profile()
+                .unwrap()
+                .service_banks
+                .len()
+        };
         assert_eq!((banks("BCD325P2"), banks("BC346XT")), (12, 11));
-        let ranges = |n: &str| models::find(n).unwrap().control_profile().unwrap().volume_range;
-        assert_eq!((ranges("BCD396XT"), ranges("BCD996XT")), (Some((0, 15)), Some((0, 29))));
-        assert!(commands(&Action::PowerOff, &models::find("BCD996P2").unwrap().control_profile().unwrap()).is_err());
-        assert!(matches!(profile().support(Capability::HoldAtLevel), Support::Unsupported(_)));
+        let ranges = |n: &str| {
+            models::find(n)
+                .unwrap()
+                .control_profile()
+                .unwrap()
+                .volume_range
+        };
+        assert_eq!(
+            (ranges("BCD396XT"), ranges("BCD996XT")),
+            (Some((0, 15)), Some((0, 29)))
+        );
+        assert!(
+            commands(
+                &Action::PowerOff,
+                &models::find("BCD996P2").unwrap().control_profile().unwrap()
+            )
+            .is_err()
+        );
+        assert!(matches!(
+            profile().support(Capability::HoldAtLevel),
+            Support::Unsupported(_)
+        ));
         assert_eq!(profile().support(Capability::Mute), Support::Emulated);
+        let br = models::find("BR330T").unwrap().control_profile().unwrap();
+        assert_eq!(br.family, Family::EarlyComma);
+        assert!(matches!(
+            br.support(Capability::Spectrum),
+            Support::Unsupported(_)
+        ));
+        assert!(
+            models::find("BCT15X")
+                .unwrap()
+                .control_profile()
+                .unwrap()
+                .spectrum
+        );
+    }
+
+    /// STS display fields and indicators are normalized for the UI.
+    #[test]
+    fn parses_sts_display_and_indicators() {
+        let status = parse_sts(
+            "STS,1111,Line 1          ,,Line 2          ,****************,Line 3          ,________________,Line 4          ,,1,0,1,$$$,0,0,5,RED,3",
+            true,
+        )
+        .unwrap();
+        assert_eq!(status.lines.len(), 4);
+        assert!(status.large.iter().all(|large| *large));
+        assert_eq!(status.lines[1].modes, "****************");
+        assert_eq!(status.battery_low, Some(true));
+        assert!(status.weather_alert);
+        assert!(status.squelch_open);
+        assert_eq!(status.signal_bars, Some(5));
+    }
+
+    /// CSC samples convert the scanner's 100 Hz unit to hertz.
+    #[test]
+    fn parses_csc_sample() {
+        let point = parse_csc("CSC,768,04625625,1").unwrap();
+        assert_eq!(
+            point,
+            SpectrumPoint {
+                rssi: 768,
+                freq_hz: 462_562_500,
+                squelch_open: true
+            }
+        );
+        assert!(parse_csc("PWR,10,20").is_err());
     }
 
     /// Receptions are logged on squelch open, closed on squelch close or channel change.
@@ -617,7 +1171,12 @@ mod tests {
     fn activity_log() {
         let t0 = Instant::now();
         let mut log = ActivityLog::default();
-        let mut s = LiveState { squelch_open: true, channel: Some("A".into()), signal_bars: Some(2), ..Default::default() };
+        let mut s = LiveState {
+            squelch_open: true,
+            channel: Some("A".into()),
+            signal_bars: Some(2),
+            ..Default::default()
+        };
         assert!(log.observe(&s, t0, "10:00:00"));
         s.signal_bars = Some(4);
         assert!(log.observe(&s, t0, "10:00:01"));
@@ -625,7 +1184,10 @@ mod tests {
         s.channel = Some("B".into());
         log.observe(&s, t0 + Duration::from_secs(3), "10:00:03");
         assert_eq!(log.entries.len(), 2);
-        assert_eq!((log.entries[0].peak_bars, log.entries[0].duration), (4, Some(Duration::from_secs(3))));
+        assert_eq!(
+            (log.entries[0].peak_bars, log.entries[0].duration),
+            (4, Some(Duration::from_secs(3)))
+        );
         s.squelch_open = false;
         log.observe(&s, t0 + Duration::from_secs(5), "10:00:05");
         assert_eq!(log.entries[1].duration, Some(Duration::from_secs(2)));

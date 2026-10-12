@@ -6,21 +6,21 @@ use std::fmt;
 
 use crate::database::{Index, ScanDatabase, ScannerMemory, SystemType};
 
+mod bc346xt;
 mod bcd325p2;
+mod bcd396xt;
 mod bcd996p2;
 mod bcd996xt;
-mod bc346xt;
 mod compat;
 pub mod live;
-mod bcd396xt;
+mod phase2_models;
 mod uniden;
 
 pub use compat::{CompatReport, Projection};
 pub use uniden::{
-    qgl_position, qsl_position, read_group_summaries, read_qgl, read_qsl, read_system_summaries, with_program_mode,
-    write_qgl, write_qsl, GroupSummary, Scanner, SystemSummary,
+    GroupSummary, Scanner, SystemSummary, qgl_position, qsl_position, read_group_summaries,
+    read_qgl, read_qsl, read_system_summaries, with_program_mode, write_qgl, write_qsl,
 };
-
 
 /// Progress callback: `(systems done, systems total)`.
 pub type Progress<'a> = &'a mut dyn FnMut(usize, usize);
@@ -65,7 +65,12 @@ pub trait ScannerModel: Sync {
         progress: Progress,
     ) -> Result<(ScanDatabase, Option<ScannerMemory>), Error>;
     /// Replaces the scanner's contents with `db`.
-    fn upload(&self, link: &mut dyn Scanner, db: &ScanDatabase, progress: Progress) -> Result<(), Error>;
+    fn upload(
+        &self,
+        link: &mut dyn Scanner,
+        db: &ScanDatabase,
+        progress: Progress,
+    ) -> Result<(), Error>;
 
     /// The part of `db` this model can store, and what had to be left out.
     fn project(&self, db: &ScanDatabase) -> Projection {
@@ -74,12 +79,16 @@ pub trait ScannerModel: Sync {
 }
 
 /// The supported scanners, in the order used for the default model.
-static MODELS: [&dyn ScannerModel; 5] = [
+static MODELS: [&dyn ScannerModel; 9] = [
     &bcd325p2::Bcd325p2,
     &bcd396xt::Bcd396xt,
     &bc346xt::Bc346xt,
     &bcd996xt::Bcd996xt,
     &bcd996p2::Bcd996p2,
+    &phase2_models::Br330t,
+    &phase2_models::Bcd996t,
+    &phase2_models::Bct15,
+    &phase2_models::Bct15x,
 ];
 
 /// All supported models.
@@ -112,6 +121,16 @@ impl Scanner for DynLink<'_> {
     fn send(&mut self, cmd: &str) -> Result<String, Error> {
         self.0.send(cmd)
     }
+
+    fn stream(
+        &mut self,
+        start: &str,
+        stop: &str,
+        should_stop: &dyn Fn() -> bool,
+        on_line: &mut dyn FnMut(String),
+    ) -> Result<(), Error> {
+        self.0.stream(start, stop, should_stop, on_line)
+    }
 }
 
 /// Everything that can go wrong while talking to the scanner or parsing its replies.
@@ -122,11 +141,18 @@ pub enum Error {
     /// The scanner answered with ERR, NG, FER, or ORER (bare or as "CMD,NG").
     Scanner { cmd: String, reply: String },
     /// The reply did not start with the expected command name, or was not "OK".
-    UnexpectedReply { expected: &'static str, reply: String },
+    UnexpectedReply {
+        expected: &'static str,
+        reply: String,
+    },
     /// A required field was empty, or the reply ended before this position.
     MissingField { cmd: &'static str, pos: usize },
     /// A field could not be parsed as the expected type.
-    BadValue { cmd: &'static str, pos: usize, value: String },
+    BadValue {
+        cmd: &'static str,
+        pos: usize,
+        value: String,
+    },
     /// A create/append command returned -1 (no free memory blocks).
     OutOfMemory(&'static str),
     /// Following FWD links never reached -1, so the chain is looping.
@@ -135,6 +161,8 @@ pub enum Error {
     InvalidName(String),
     /// A write function was handed the wrong kind of system.
     WrongSystemKind,
+    /// The model is available for live control but its database dialect is not implemented.
+    UnsupportedOperation(&'static str),
 }
 
 impl fmt::Display for Error {
@@ -154,6 +182,7 @@ impl fmt::Display for Error {
             Error::LinkLoop(idx) => write!(f, "link chain loops (seen at index {idx})"),
             Error::InvalidName(n) => write!(f, "invalid name {n:?}"),
             Error::WrongSystemKind => write!(f, "wrong system kind for this operation"),
+            Error::UnsupportedOperation(message) => f.write_str(message),
         }
     }
 }
@@ -178,6 +207,8 @@ mod tests {
     fn registry_finds_models() {
         assert_eq!(find("BCD325P2").map(|m| m.name()), Some("BCD325P2"));
         assert_eq!(find("BCD396XT").map(|m| m.name()), Some("BCD396XT"));
+        assert_eq!(find("BR330T").map(|m| m.name()), Some("BR330T"));
+        assert_eq!(find("BCT15X").map(|m| m.name()), Some("BCT15X"));
         assert!(find("BC125AT").is_none());
     }
 
@@ -195,6 +226,12 @@ mod tests {
     fn bcd396xt_has_no_dmr() {
         let c = find("BCD396XT").unwrap().capabilities();
         assert!(!c.system_types.contains(&SystemType::MotoTrbo));
-        assert!(find("BCD325P2").unwrap().capabilities().system_types.contains(&SystemType::MotoTrbo));
+        assert!(
+            find("BCD325P2")
+                .unwrap()
+                .capabilities()
+                .system_types
+                .contains(&SystemType::MotoTrbo)
+        );
     }
 }

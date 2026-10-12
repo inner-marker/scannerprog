@@ -3,9 +3,9 @@
 
 use dioxus::prelude::*;
 
-use crate::control::{ConnState, CONN, REMOTE_CONTROL};
+use crate::control::{CONN, ConnState, REMOTE_CONTROL};
 use crate::models::live::{Capability, Support};
-use crate::scanner_interaction::{connected_model, SCANNER_INFO};
+use crate::scanner_interaction::{SCANNER_INFO, connected_model};
 
 /// Whether a control can be used right now and, if not, why.
 #[derive(Clone, Debug, PartialEq)]
@@ -29,7 +29,9 @@ impl Gate {
         match self {
             Gate::Enabled => None,
             Gate::Unsupported(r) | Gate::NotNow(r) => Some(r.clone()),
-            Gate::NeedsProgramMode => Some("Briefly pauses scanning while the scanner is in Program Mode.".into()),
+            Gate::NeedsProgramMode => {
+                Some("Briefly pauses scanning while the scanner is in Program Mode.".into())
+            }
         }
     }
 
@@ -64,7 +66,9 @@ pub fn gate(cap: Capability) -> Gate {
     }
     match *CONN.read() {
         ConnState::Connected => {}
-        ConnState::Degraded => return Gate::NotNow("The connection is unstable; waiting for the scanner.".into()),
+        ConnState::Degraded => {
+            return Gate::NotNow("The connection is unstable; waiting for the scanner.".into());
+        }
         _ => return Gate::NotNow("Connecting to the scanner…".into()),
     }
     match profile.support(cap) {

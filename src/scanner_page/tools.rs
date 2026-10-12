@@ -3,12 +3,17 @@
 use dioxus::prelude::*;
 use std::time::Duration;
 
+use super::advanced::{SpectrumView, VirtualRemote};
 use super::capability::CapButton;
 use super::panels::run;
-use crate::control::{clear_activity, ACTIVITY, LIVE, TXRX_LOG};
-use crate::messages::{push_message, MessageKind};
+use crate::control::{ACTIVITY, LIVE, TXRX_LOG, clear_activity};
+use crate::messages::{MessageKind, push_message};
 use crate::models::live::{Action, Capability};
 use crate::scanner_interaction::default_save_dir;
+
+/// Incremented by the status strip to open the connection log.
+pub static OPEN_LOG_REQUEST: GlobalSignal<u32> = Signal::global(|| 0);
+pub static TOGGLE_DRAWER_REQUEST: GlobalSignal<u32> = Signal::global(|| 0);
 
 /// Set while a text box has focus, so keyboard shortcuts don't fire while typing.
 pub type Typing = Signal<bool>;
@@ -37,7 +42,10 @@ pub fn QuickTune() -> Element {
     };
 
     let mut go = move |hz: u64| {
-        run(Action::QuickTune { freq_hz: hz, modulation: Some(modulation()) });
+        run(Action::QuickTune {
+            freq_hz: hz,
+            modulation: Some(modulation()),
+        });
         let mut r = recent.write();
         r.retain(|f| *f != hz);
         r.insert(0, hz);
@@ -232,7 +240,11 @@ struct DrawerState {
 
 /// Where the drawer state is stored.
 fn drawer_path() -> Option<std::path::PathBuf> {
-    Some(dirs::data_local_dir()?.join("Scanner Programmer").join("scanner-drawer.ron"))
+    Some(
+        dirs::data_local_dir()?
+            .join("Scanner Programmer")
+            .join("scanner-drawer.ron"),
+    )
 }
 
 fn load_drawer() -> DrawerState {
@@ -253,17 +265,49 @@ fn save_drawer(state: DrawerState) {
     }
 }
 
-/// Collapsible drawer: the TX/RX log, and placeholders for the spectrum and virtual remote.
+/// Collapsible drawer: the TX/RX log, spectrum sweep, and virtual remote.
 #[component]
 pub fn BottomDrawer() -> Element {
     let mut state = use_signal(load_drawer);
+    let open_log = *OPEN_LOG_REQUEST.read();
+    let toggle_drawer = *TOGGLE_DRAWER_REQUEST.read();
+    use_effect(move || {
+        if open_log > 0 {
+            let next = DrawerState {
+                open: true,
+                tab: Tab::Log,
+            };
+            state.set(next);
+            save_drawer(next);
+        }
+    });
+    use_effect(move || {
+        if toggle_drawer > 0 {
+            let current = state();
+            let next = DrawerState {
+                open: !current.open,
+                tab: current.tab,
+            };
+            state.set(next);
+            save_drawer(next);
+        }
+    });
     let s = state();
     let mut set = move |next: DrawerState| {
         state.set(next);
         save_drawer(next);
     };
-    let lines = TXRX_LOG.read().iter().rev().take(200).map(|l| (if l.tx { "→" } else { "←" }, l.clone())).collect::<Vec<_>>();
-    let live_summary = LIVE.read().freq_mhz().map_or_else(String::new, |m| format!("{m:.4} MHz"));
+    let lines = TXRX_LOG
+        .read()
+        .iter()
+        .rev()
+        .take(200)
+        .map(|l| (if l.tx { "→" } else { "←" }, l.clone()))
+        .collect::<Vec<_>>();
+    let live_summary = LIVE
+        .read()
+        .freq_mhz()
+        .map_or_else(String::new, |m| format!("{m:.4} MHz"));
 
     rsx! {
         section { id: "drawer", class: if s.open { "open" } else { "" },
@@ -291,10 +335,10 @@ pub fn BottomDrawer() -> Element {
                             }
                         },
                         Tab::Spectrum => rsx! {
-                            p { class: "control-hint", "{super::capability::gate(Capability::Spectrum).reason().unwrap_or_default()}" }
+                            SpectrumView {}
                         },
                         Tab::Remote => rsx! {
-                            p { class: "control-hint", "{super::capability::gate(Capability::Keypad).reason().unwrap_or_default()}" }
+                            VirtualRemote {}
                         },
                     }
                 }

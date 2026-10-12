@@ -33,7 +33,11 @@ impl fmt::Display for CompatIssue {
             Severity::Skipped => "skipped",
             Severity::Degraded => "changed",
         };
-        write!(f, "System \"{}\" ({verb}): {}", self.system_name, self.message)
+        write!(
+            f,
+            "System \"{}\" ({verb}): {}",
+            self.system_name, self.message
+        )
     }
 }
 
@@ -51,7 +55,10 @@ impl CompatReport {
 
     /// Issues of one severity.
     fn count(&self, severity: Severity) -> usize {
-        self.issues.iter().filter(|i| i.severity == severity).count()
+        self.issues
+            .iter()
+            .filter(|i| i.severity == severity)
+            .count()
     }
 
     /// Number of skipped items.
@@ -71,7 +78,8 @@ impl CompatReport {
 
     /// True if the whole system is skipped, or something inside it is.
     pub fn system_has_skips(&self, system: usize) -> bool {
-        self.for_system(system).any(|i| i.severity == Severity::Skipped)
+        self.for_system(system)
+            .any(|i| i.severity == Severity::Skipped)
     }
 
     /// One line for banners and messages.
@@ -100,19 +108,31 @@ pub fn project(model: &str, caps: &Capabilities, db: &ScanDatabase) -> Projectio
     for (i, sys) in db.systems.iter().enumerate() {
         let name = sys.info.name.to_string();
         let mut issue = |severity, message: String| {
-            issues.push(CompatIssue { system: i, system_name: name.clone(), severity, message });
+            issues.push(CompatIssue {
+                system: i,
+                system_name: name.clone(),
+                severity,
+                message,
+            });
         };
         if !caps.system_types.contains(&sys.info.sys_type) {
             issue(
                 Severity::Skipped,
-                format!("system type {} is not supported by the {model}", sys.info.sys_type),
+                format!(
+                    "system type {} is not supported by the {model}",
+                    sys.info.sys_type
+                ),
             );
             continue;
         }
 
         let mut sys = sys.clone();
         let in_range = |f: Option<Freq>| {
-            f.is_none_or(|f| caps.freq_ranges.iter().any(|&(lo, hi)| (lo..=hi).contains(&f.0)))
+            f.is_none_or(|f| {
+                caps.freq_ranges
+                    .iter()
+                    .any(|&(lo, hi)| (lo..=hi).contains(&f.0))
+            })
         };
         let mut dropped = Vec::new();
         let mut degraded = 0usize;
@@ -134,7 +154,9 @@ pub fn project(model: &str, caps: &Capabilities, db: &ScanDatabase) -> Projectio
                     });
                 }
             }
-            SystemKind::Trunked { sites, tgid_groups, .. } => {
+            SystemKind::Trunked {
+                sites, tgid_groups, ..
+            } => {
                 for (s, site) in sites.iter_mut().enumerate() {
                     let mut f = 0;
                     site.frequencies.retain(|tf| {
@@ -170,7 +192,9 @@ pub fn project(model: &str, caps: &Capabilities, db: &ScanDatabase) -> Projectio
         if degraded > 0 {
             issue(
                 Severity::Degraded,
-                format!("{degraded} DMR setting(s) (TDMA slot / color code) are not supported by the {model}"),
+                format!(
+                    "{degraded} DMR setting(s) (TDMA slot / color code) are not supported by the {model}"
+                ),
             );
         }
         kept.push((i, sys));
@@ -178,7 +202,10 @@ pub fn project(model: &str, caps: &Capabilities, db: &ScanDatabase) -> Projectio
 
     // Drop systems from the end of the scan order until the model's limits are met.
     loop {
-        let trial = ScanDatabase { systems: kept.iter().map(|(_, s)| s.clone()).collect(), ..db.clone() };
+        let trial = ScanDatabase {
+            systems: kept.iter().map(|(_, s)| s.clone()).collect(),
+            ..db.clone()
+        };
         let (systems, sites, channels) = trial.counts();
         let over = systems > caps.max_systems
             || sites > caps.max_sites
@@ -198,7 +225,10 @@ pub fn project(model: &str, caps: &Capabilities, db: &ScanDatabase) -> Projectio
 
     issues.sort_by_key(|i| i.system);
     Projection {
-        db: ScanDatabase { systems: kept.into_iter().map(|(_, s)| s).collect(), ..db.clone() },
+        db: ScanDatabase {
+            systems: kept.into_iter().map(|(_, s)| s).collect(),
+            ..db.clone()
+        },
         report: CompatReport { issues },
     }
 }
@@ -207,8 +237,8 @@ pub fn project(model: &str, caps: &Capabilities, db: &ScanDatabase) -> Projectio
 mod tests {
     use super::*;
     use crate::database::{
-        Channel, ChannelGroup, ChannelRecord, Name, Provenance, SystemKind, SystemRecord, SystemType, TgidEntry,
-        TgidGroup, TgidRecord, TdmaSlot, Uid, FORMAT_VERSION,
+        Channel, ChannelGroup, ChannelRecord, FORMAT_VERSION, Name, Provenance, SystemKind,
+        SystemRecord, SystemType, TdmaSlot, TgidEntry, TgidGroup, TgidRecord, Uid,
     };
     use crate::models;
 
@@ -217,7 +247,11 @@ mod tests {
             .iter()
             .map(|&f| Channel {
                 index: Default::default(),
-                info: ChannelRecord { name: Name::new("Ch").unwrap(), freq: Some(Freq(f)), ..Default::default() },
+                info: ChannelRecord {
+                    name: Name::new("Ch").unwrap(),
+                    freq: Some(Freq(f)),
+                    ..Default::default()
+                },
             })
             .collect();
         System {
@@ -230,13 +264,21 @@ mod tests {
                 ..Default::default()
             },
             kind: SystemKind::Conventional {
-                groups: vec![ChannelGroup { index: Default::default(), info: Default::default(), channels }],
+                groups: vec![ChannelGroup {
+                    index: Default::default(),
+                    info: Default::default(),
+                    channels,
+                }],
             },
         }
     }
 
     fn db(systems: Vec<System>) -> ScanDatabase {
-        ScanDatabase { format_version: FORMAT_VERSION, model: None, systems }
+        ScanDatabase {
+            format_version: FORMAT_VERSION,
+            model: None,
+            systems,
+        }
     }
 
     fn model(name: &str) -> &'static dyn models::ScannerModel {
@@ -258,9 +300,13 @@ mod tests {
         let p = model("BCD325P2").project(&d);
         assert_eq!(p.report.skipped(), 1);
         assert!(p.report.system_has_skips(0));
-        let SystemKind::Conventional { groups } = &p.db.systems[0].kind else { unreachable!() };
+        let SystemKind::Conventional { groups } = &p.db.systems[0].kind else {
+            unreachable!()
+        };
         assert_eq!(groups[0].channels.len(), 1);
-        let SystemKind::Conventional { groups } = &d.systems[0].kind else { unreachable!() };
+        let SystemKind::Conventional { groups } = &d.systems[0].kind else {
+            unreachable!()
+        };
         assert_eq!(groups[0].channels.len(), 2);
     }
 
@@ -276,7 +322,10 @@ mod tests {
                 info: Default::default(),
                 tgids: vec![TgidEntry {
                     index: Default::default(),
-                    info: TgidRecord { tdma_slot: Some(TdmaSlot::Slot1), ..Default::default() },
+                    info: TgidRecord {
+                        tdma_slot: Some(TdmaSlot::Slot1),
+                        ..Default::default()
+                    },
                 }],
             }],
         };
@@ -299,21 +348,28 @@ mod tests {
                 info: Default::default(),
                 tgids: vec![TgidEntry {
                     index: Default::default(),
-                    info: TgidRecord { tdma_slot: Some(TdmaSlot::Slot1), ..Default::default() },
+                    info: TgidRecord {
+                        tdma_slot: Some(TdmaSlot::Slot1),
+                        ..Default::default()
+                    },
                 }],
             }],
         };
         let d = db(vec![sys]);
         let p = model("BCD396XT").project(&d);
         assert_eq!(p.report.degraded(), 1);
-        let SystemKind::Trunked { tgid_groups, .. } = &p.db.systems[0].kind else { unreachable!() };
+        let SystemKind::Trunked { tgid_groups, .. } = &p.db.systems[0].kind else {
+            unreachable!()
+        };
         assert_eq!(tgid_groups[0].tgids[0].info.tdma_slot, None);
     }
 
     #[test]
     fn systems_over_the_limit_are_dropped_from_the_end() {
         let max = model("BCD325P2").capabilities().max_systems;
-        let d = db((0..=max).map(|i| conventional(&format!("S{i}"), &[])).collect());
+        let d = db((0..=max)
+            .map(|i| conventional(&format!("S{i}"), &[]))
+            .collect());
         let p = model("BCD325P2").project(&d);
         assert_eq!(p.db.systems.len(), max);
         assert_eq!(p.report.issues.len(), 1);

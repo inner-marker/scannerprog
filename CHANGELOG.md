@@ -9,6 +9,11 @@
   - Polls tolerate dropped replies; the link is only dropped after ten failures in a row.
 
 - Added the BCD996XT and BCD996P2 (database and live control; untested on hardware). Their volume (0–29) and squelch (0–19) ranges differ, there is no power-off command, and the `[RECORD]` fields are not preserved.
+- Scanner page Phase 2:
+  - Added staged System/Group Quick Key edits with a single Program Mode apply, discard support, paging, digit shortcuts, and a visible Program Mode badge.
+  - Added a demand-driven `STS` LCD mirror, model-specific virtual keypads with tap/long-press gestures, `CSC` sweep display, battery/weather/GPS status, and log/error navigation.
+  - Added live-control profiles for the BR330T, BCD996T, BCT15 and BCT15X. Their older database dialects remain explicitly unsupported rather than being sent incompatible XT/P2 memory commands.
+  - Added parsers/tests for `STS` and streamed `CSC` samples. Hardware transcript/UI replay remains pending captured data.
 
 ## [0.2.0] - Basic Scanner Functions
 

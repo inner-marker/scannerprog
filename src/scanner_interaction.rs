@@ -1,5 +1,5 @@
+use crate::messages::{MessageKind, push_message};
 use dioxus::prelude::*;
-use crate::messages::{push_message, MessageKind};
 use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -15,8 +15,6 @@ pub struct ScannerInfo {
     pub model: String,
     pub firmware: String,
 }
-
-
 
 /// USB vendor, product, and descriptive information reported by the operating system.
 #[derive(Debug, Clone, PartialEq)]
@@ -36,7 +34,7 @@ pub struct ScannerDetection {
 
 // Global signal for the currently connected scanner (UsbDeviceInfo)
 /// USB device seen during port detection, whether supported or not.
-pub static SCANNER_USB_DEVICE: GlobalSignal<Option<UsbDeviceInfo>> = Signal::global( || None );
+pub static SCANNER_USB_DEVICE: GlobalSignal<Option<UsbDeviceInfo>> = Signal::global(|| None);
 
 /// Sends one `\r`-terminated command and returns the response without its `CMD,` prefix.
 fn query(port: &mut Box<dyn serialport::SerialPort>, cmd: &str) -> Option<String> {
@@ -54,7 +52,7 @@ fn query(port: &mut Box<dyn serialport::SerialPort>, cmd: &str) -> Option<String
 }
 
 /// Looks for a scanner
-/// 
+///
 /// Iterates over all available USB serial ports to find a compatible scanner.
 pub fn detect_scanner() -> Result<ScannerDetection, serialport::Error> {
     // Get a list of all available serial ports.
@@ -93,7 +91,6 @@ pub fn detect_scanner() -> Result<ScannerDetection, serialport::Error> {
             }
         };
 
-
         // Query the scanner for its model and firmware information.
         let Some(model) = query(&mut port, "MDL") else {
             continue;
@@ -106,7 +103,7 @@ pub fn detect_scanner() -> Result<ScannerDetection, serialport::Error> {
         // Query the scanner for its firmware information.
         let firmware = query(&mut port, "VER").unwrap_or_else(|| "unknown".into());
         // println!("Detected scanner firmware: {}", firmware);
-        
+
         // Return the scanner information if both model and firmware were successfully queried.
         return Ok(ScannerDetection {
             scanner: Some(ScannerInfo {
@@ -126,8 +123,6 @@ pub fn detect_scanner() -> Result<ScannerDetection, serialport::Error> {
     })
 }
 
-
-
 /// Current state and per-system progress of a database download.
 #[derive(Debug, Clone, PartialEq)]
 pub enum DownloadStatus {
@@ -138,14 +133,16 @@ pub enum DownloadStatus {
 }
 
 /// State and per-system progress for the current database download.
-pub static DOWNLOAD_STATUS: GlobalSignal<DownloadStatus> = Signal::global(|| DownloadStatus::NotStarted);
+pub static DOWNLOAD_STATUS: GlobalSignal<DownloadStatus> =
+    Signal::global(|| DownloadStatus::NotStarted);
 
 /// Validation errors for the loaded database; `None` means it needs checking again.
 /// The database may be uploaded only when this is `Some` and empty.
 pub static VALIDATION: GlobalSignal<Option<Vec<String>>> = Signal::global(|| None);
 
 /// Database currently shown in the editor, if one is loaded.
-pub static SCAN_DATABASE: GlobalSignal<Option<ScanDatabase>> = Signal::global(|| Some(ScanDatabase::new_placeholder()));
+pub static SCAN_DATABASE: GlobalSignal<Option<ScanDatabase>> =
+    Signal::global(|| Some(ScanDatabase::new_placeholder()));
 
 /// Memory report returned by the scanner with the most recent successful download.
 pub static SCANNER_MEMORY: GlobalSignal<Option<ScannerMemory>> = Signal::global(|| None);
@@ -158,7 +155,10 @@ pub static DOWNLOAD_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// Model of the connected scanner, if one is detected and supported.
 pub fn connected_model() -> Option<&'static dyn ScannerModel> {
-    SCANNER_INFO.read().as_ref().and_then(|info| models::find(&info.model))
+    SCANNER_INFO
+        .read()
+        .as_ref()
+        .and_then(|info| models::find(&info.model))
 }
 
 /// Scanner model the user picked while none is connected (by name); `None` means the default.
@@ -180,7 +180,9 @@ impl Scanner for SerialScanner {
     fn send(&mut self, cmd: &str) -> Result<String, Error> {
         // Drop stale bytes (e.g. a reply that arrived after a timeout) so replies stay paired with commands.
         let _ = self.0.clear(serialport::ClearBuffer::Input);
-        self.0.write_all(format!("{cmd}\r").as_bytes()).map_err(Error::Io)?;
+        self.0
+            .write_all(format!("{cmd}\r").as_bytes())
+            .map_err(Error::Io)?;
         let mut buf = Vec::new();
         let mut byte = [0u8; 1];
         loop {
@@ -194,9 +196,81 @@ impl Scanner for SerialScanner {
         let name = cmd.split(',').next().unwrap_or(cmd);
         let body = reply.strip_prefix(&format!("{name},")).unwrap_or(&reply);
         if matches!(body, "ERR" | "NG" | "FER" | "ORER") {
-            return Err(Error::Scanner { cmd: name.to_owned(), reply });
+            return Err(Error::Scanner {
+                cmd: name.to_owned(),
+                reply,
+            });
         }
         Ok(reply)
+    }
+
+    fn stream(
+        &mut self,
+        start: &str,
+        stop: &str,
+        should_stop: &dyn Fn() -> bool,
+        on_line: &mut dyn FnMut(String),
+    ) -> Result<(), Error> {
+        let old_timeout = self.0.timeout();
+        self.0
+            .clear(serialport::ClearBuffer::Input)
+            .map_err(|e| Error::Io(e.into()))?;
+        self.0
+            .write_all(format!("{start}\r").as_bytes())
+            .map_err(Error::Io)?;
+        self.0
+            .set_timeout(Duration::from_millis(250))
+            .map_err(|e| Error::Io(e.into()))?;
+        let mut line = Vec::new();
+        let mut byte = [0u8; 1];
+        while !should_stop() {
+            match self.0.read_exact(&mut byte) {
+                Ok(()) if byte[0] == b'\r' => {
+                    let received = String::from_utf8_lossy(&line).into_owned();
+                    if matches!(received.as_str(), "ERR" | "NG" | "FER" | "ORER" | "CSC,NG") {
+                        let _ = self.0.set_timeout(old_timeout);
+                        return Err(Error::Scanner {
+                            cmd: "CSC".to_owned(),
+                            reply: received,
+                        });
+                    }
+                    on_line(received);
+                    line.clear();
+                }
+                Ok(()) => line.push(byte[0]),
+                Err(e)
+                    if matches!(
+                        e.kind(),
+                        std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+                    ) => {}
+                Err(e) => {
+                    let _ = self.0.set_timeout(old_timeout);
+                    return Err(Error::Io(e));
+                }
+            }
+        }
+        self.0
+            .write_all(format!("{stop}\r").as_bytes())
+            .map_err(Error::Io)?;
+        line.clear();
+        loop {
+            self.0.read_exact(&mut byte).map_err(Error::Io)?;
+            if byte[0] == b'\r' {
+                break;
+            }
+            line.push(byte[0]);
+        }
+        self.0
+            .set_timeout(old_timeout)
+            .map_err(|e| Error::Io(e.into()))?;
+        let reply = String::from_utf8_lossy(&line);
+        if reply != "CSC,OK" {
+            return Err(Error::UnexpectedReply {
+                expected: "CSC",
+                reply: reply.into_owned(),
+            });
+        }
+        Ok(())
     }
 }
 
@@ -225,7 +299,11 @@ fn download_blocking(
 
 /// Records a failed download in both its status signal and the message queue.
 fn fail_download(error: String) {
-    push_message(MessageKind::Warning, "download", format!("Download failed: {error}"));
+    push_message(
+        MessageKind::Warning,
+        "download",
+        format!("Download failed: {error}"),
+    );
     *DOWNLOAD_STATUS.write() = DownloadStatus::Failed(error);
 }
 
@@ -261,10 +339,16 @@ pub async fn download_database() {
         Ok(Ok((db, memory))) => {
             *SCANNER_MEMORY.write() = memory;
             // Merge rather than replace, so edits and systems from other sources are kept.
-            let source = Source::Scanner { model: model.name().to_owned() };
+            let source = Source::Scanner {
+                model: model.name().to_owned(),
+            };
             let report = {
                 let mut library = SCAN_DATABASE.write();
-                merge_import(library.get_or_insert_with(ScanDatabase::default), &source, db.systems)
+                merge_import(
+                    library.get_or_insert_with(ScanDatabase::default),
+                    &source,
+                    db.systems,
+                )
             };
             *VALIDATION.write() = None;
             *DOWNLOAD_STATUS.write() = DownloadStatus::Completed;
@@ -306,7 +390,11 @@ fn upload_blocking(
 
 /// Adds a warning for a failed upload without hiding the current database.
 fn fail_upload(error: String) {
-    push_message(MessageKind::Warning, "upload", format!("Upload failed: {error}"));
+    push_message(
+        MessageKind::Warning,
+        "upload",
+        format!("Upload failed: {error}"),
+    );
 }
 
 /// Writes [`SCAN_DATABASE`] to the detected scanner, replacing its existing systems.
@@ -328,14 +416,22 @@ pub async fn upload_database() {
     let errors = db.validate();
     if !errors.is_empty() {
         let problems: Vec<String> = errors.iter().map(ToString::to_string).collect();
-        fail_upload(format!("Database cannot be uploaded to a {}: {}", model.name(), problems.join("; ")));
+        fail_upload(format!(
+            "Database cannot be uploaded to a {}: {}",
+            model.name(),
+            problems.join("; ")
+        ));
         return;
     }
     if DOWNLOAD_ACTIVE.swap(true, Ordering::SeqCst) {
         return;
     }
     *UPLOAD_PROGRESS.write() = Some((0, db.systems.len()));
-    push_message(MessageKind::Note, "upload", format!("Uploading database to {}...", model.name()));
+    push_message(
+        MessageKind::Note,
+        "upload",
+        format!("Uploading database to {}...", model.name()),
+    );
 
     // Serial I/O is blocking, so run it off the UI task and send progress back over a channel.
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -350,7 +446,11 @@ pub async fn upload_database() {
     }
 
     match task.await {
-        Ok(Ok(())) => push_message(MessageKind::Note, "upload", "Upload completed successfully."),
+        Ok(Ok(())) => push_message(
+            MessageKind::Note,
+            "upload",
+            "Upload completed successfully.",
+        ),
         Ok(Err(Error::Scanner { cmd, reply })) if cmd == "PRG" => fail_upload(format!(
             "scanner rejected PRG: {reply}. Return the scanner to the normal scan/hold screen and try again."
         )),
@@ -377,7 +477,10 @@ pub fn default_save_dir() -> Option<std::path::PathBuf> {
 }
 
 /// Saves `db` as RON to `path`, giving it a `.ron` extension if it has none.
-pub fn save_database_ron(db: &ScanDatabase, path: &std::path::Path) -> Result<std::path::PathBuf, String> {
+pub fn save_database_ron(
+    db: &ScanDatabase,
+    path: &std::path::Path,
+) -> Result<std::path::PathBuf, String> {
     let mut path = path.to_path_buf();
     if path.extension().is_none() {
         path.set_extension("ron");
@@ -390,7 +493,8 @@ pub fn save_database_ron(db: &ScanDatabase, path: &std::path::Path) -> Result<st
 
 /// Reads a RON database previously written by [`save_database_ron`].
 pub fn load_database_ron(path: &std::path::Path) -> Result<ScanDatabase, String> {
-    let text = std::fs::read_to_string(path).map_err(|e| format!("Could not read {}: {e}", path.display()))?;
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("Could not read {}: {e}", path.display()))?;
     let mut db: ScanDatabase =
         ron::from_str(&text).map_err(|e| format!("Could not parse {}: {e}", path.display()))?;
     db.migrate();

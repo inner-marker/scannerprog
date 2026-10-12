@@ -3,12 +3,14 @@
 
 use dioxus::prelude::*;
 
-use super::capability::{gate, CapButton, CapSlider};
+use super::capability::{CapButton, CapSlider, gate};
+use super::tools::OPEN_LOG_REQUEST;
 use crate::control::{
-    perform, start_remote_control, stop_remote_control, ConnState, CONN, HEALTH, LIVE, REMOTE_CONTROL,
+    CONN, ConnState, DISPLAY_STATUS, GPS_FIX, HEALTH, LIVE, PROGRAM_MODE, REMOTE_CONTROL, perform,
+    start_remote_control, stop_remote_control,
 };
-use crate::models::live::{noaa_label, Action, Capability, ScanMode, NOAA_CHANNELS, WEATHER_MODES};
-use crate::scanner_interaction::{connected_model, DOWNLOAD_ACTIVE, SCANNER_INFO};
+use crate::models::live::{Action, Capability, NOAA_CHANNELS, ScanMode, WEATHER_MODES, noaa_label};
+use crate::scanner_interaction::{DOWNLOAD_ACTIVE, SCANNER_INFO, connected_model};
 
 /// Runs `action` without blocking the UI.
 pub fn run(action: Action) {
@@ -40,7 +42,10 @@ pub fn ConnectionBar() -> Element {
         ConnState::Degraded => ("warn", "Not responding"),
         ConnState::Lost => ("bad", "Connection lost"),
     };
-    let identity = info.map_or_else(|| "No scanner detected".to_owned(), |i| format!("{} on {}", i.model, i.port));
+    let identity = info.map_or_else(
+        || "No scanner detected".to_owned(),
+        |i| format!("{} on {}", i.model, i.port),
+    );
 
     rsx! {
         header { id: "connection-bar",
@@ -65,6 +70,12 @@ pub fn ConnectionBar() -> Element {
             if let Some(hint) = hint {
                 span { class: "control-hint", "{hint}" }
             }
+            if *PROGRAM_MODE.read() {
+                span { class: "program-mode-badge", role: "status",
+                    "Program Mode"
+                    button { onclick: move |_| stop_remote_control(), "Leave" }
+                }
+            }
         }
     }
 }
@@ -82,7 +93,10 @@ pub fn ModeBar() -> Element {
     let mode = LIVE.read().mode;
     let live_freq = LIVE.read().freq_hz;
     let mut open = use_signal(|| None::<Popover>);
-    let banks = connected_model().and_then(|m| m.control_profile()).map(|p| p.service_banks).unwrap_or(&[]);
+    let banks = connected_model()
+        .and_then(|m| m.control_profile())
+        .map(|p| p.service_banks)
+        .unwrap_or(&[]);
     let current = |m: fn(&ScanMode) -> bool| mode.as_ref().is_some_and(m);
 
     rsx! {
@@ -215,7 +229,11 @@ pub fn NowPlaying() -> Element {
     };
     let tags = match (&live.system_tag, &live.channel_tag) {
         (None, None) => String::new(),
-        (s, c) => format!("Tags {} / {}", s.as_deref().unwrap_or("–"), c.as_deref().unwrap_or("–")),
+        (s, c) => format!(
+            "Tags {} / {}",
+            s.as_deref().unwrap_or("–"),
+            c.as_deref().unwrap_or("–")
+        ),
     };
 
     rsx! {
@@ -274,8 +292,14 @@ pub fn Transport() -> Element {
 pub fn Audio() -> Element {
     let live = LIVE.read().clone();
     let profile = connected_model().and_then(|m| m.control_profile());
-    let (vmin, vmax) = profile.as_ref().and_then(|p| p.volume_range).unwrap_or((0, 15));
-    let (smin, smax) = profile.as_ref().and_then(|p| p.squelch_range).unwrap_or((0, 15));
+    let (vmin, vmax) = profile
+        .as_ref()
+        .and_then(|p| p.volume_range)
+        .unwrap_or((0, 15));
+    let (smin, smax) = profile
+        .as_ref()
+        .and_then(|p| p.squelch_range)
+        .unwrap_or((0, 15));
 
     rsx! {
         section { id: "audio", class: "panel",
@@ -312,21 +336,47 @@ pub fn Audio() -> Element {
 pub fn StatusStrip() -> Element {
     let health = *HEALTH.read();
     let on = *REMOTE_CONTROL.read();
-    let planned = [
-        (Capability::Battery, "Battery"),
-        (Capability::WeatherAlert, "WX alert"),
-    ];
+    let status = DISPLAY_STATUS.read().clone();
+    let profile = connected_model().and_then(|m| m.control_profile());
 
     rsx! {
         footer { id: "status-strip",
             if on {
                 span { "Poll {health.latency_ms} ms" }
-                span { "Errors {health.errors}" }
+                button {
+                    class: "status-link",
+                    title: "Open connection log",
+                    onclick: move |_| *OPEN_LOG_REQUEST.write() += 1,
+                    "Errors {health.errors}"
+                }
             } else {
                 span { "Not polling" }
             }
-            for (cap, label) in planned {
-                span { class: "planned", title: "{gate(cap).reason().unwrap_or_default()}", "{label}: n/a" }
+            if let Some(profile) = profile {
+                if profile.battery_status {
+                    span {
+                        class: if status.as_ref().and_then(|s| s.battery_low) == Some(true) { "alert" } else { "" },
+                        "Battery: "
+                        if status.as_ref().and_then(|s| s.battery_low) == Some(true) { "Low" } else { "OK" }
+                    }
+                } else {
+                    span { class: "unavailable", title: "{gate(Capability::Battery).reason().unwrap_or_default()}", "Battery: n/a" }
+                }
+                span {
+                    class: if status.as_ref().is_some_and(|s| s.weather_alert) { "alert" } else { "" },
+                    "WX alert: "
+                    if status.as_ref().is_some_and(|s| s.weather_alert) { "Active" } else { "None" }
+                }
+                if profile.gps_status {
+                    span {
+                        "GPS: "
+                        match *GPS_FIX.read() {
+                            Some(true) => "Fix",
+                            Some(false) => "No fix",
+                            None => "—",
+                        }
+                    }
+                }
             }
         }
     }

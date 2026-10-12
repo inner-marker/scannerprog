@@ -630,12 +630,33 @@ button:hover:not(:disabled) {
     background: #3a2f10;
     color: #ffe9b0;
 }
+.qk-pending {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.6em;
+    margin: 0.5em 0;
+    padding: 0.6em 0.8em;
+    border: 1px solid #7758c8;
+    border-radius: 4px;
+    background: #29203f;
+}
+.program-mode-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5em;
+    padding: 0.2em 0.6em;
+    border-radius: 1em;
+    background: #6646b5;
+    color: white;
+}
 .qk-grid {
     display: grid;
     grid-template-columns: repeat(10, minmax(0, 2.6em));
     gap: 4px;
     margin: 0.8em 0;
 }
+.qk-pages { display: flex; align-items: center; gap: 0.5em; margin-top: 0.7em; }
 button.qk.on { background: #2e9e44; color: white; }
 button.qk.off { background: #b04040; color: white; }
 span.qk.on { color: #5fd47c; font-weight: bold; }
@@ -663,6 +684,39 @@ span.qk.none { opacity: 0.6; }
 .txrx-log .rx { color: #c8c8c8; }
 .txrx-log .ts { opacity: 0.5; }
 
+.virtual-remote {
+    display: grid;
+    grid-template-columns: minmax(18em, 1fr) minmax(18em, 1fr);
+    gap: 1em;
+}
+.lcd-mirror {
+    min-height: 8em;
+    padding: 0.8em;
+    border: 3px solid #3b3f48;
+    border-radius: 8px;
+    background: #d5e2b1;
+    color: #16200f;
+    font-family: monospace;
+}
+.lcd-line { min-height: 1.2em; white-space: pre; }
+.lcd-line.large { font-size: 1.15em; font-weight: bold; }
+.lcd-line .reverse { color: #d5e2b1; background: #16200f; }
+.lcd-line .underline { text-decoration: underline; }
+.remote-keypad {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(4em, 1fr));
+    gap: 0.35em;
+}
+.remote-key { min-height: 2.5em; touch-action: none; }
+.spectrum-view { min-height: 10em; }
+.spectrum-labels { display: flex; justify-content: space-between; font-family: monospace; }
+.spectrum-chart {
+    width: 100%;
+    height: 9em;
+    border: 1px solid #343a46;
+    background: linear-gradient(#151a20, #0b0d11);
+}
+
 #status-strip {
     position: fixed;
     left: 0;
@@ -676,3 +730,16 @@ span.qk.none { opacity: 0.6; }
     font-size: 0.85em;
 }
 #status-strip .planned { opacity: 0.4; }
+#status-strip .unavailable { opacity: 0.45; }
+#status-strip .alert { color: #ffbf4d; font-weight: bold; }
+.status-link {
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    text-decoration: underline;
+}
+
+@media (max-width: 899px) {
+    .virtual-remote { grid-template-columns: 1fr; }
+}

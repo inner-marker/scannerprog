@@ -19,9 +19,15 @@ pub struct Dialect {
 
 impl Dialect {
     /// Models with DMR/MotoTRBO support (BCD325P2).
-    pub const DIGITAL_DMR: Dialect = Dialect { tdma_slot: true, color_code: true };
+    pub const DIGITAL_DMR: Dialect = Dialect {
+        tdma_slot: true,
+        color_code: true,
+    };
     /// Models without DMR support (BCD396XT).
-    pub const NO_DMR: Dialect = Dialect { tdma_slot: false, color_code: false };
+    pub const NO_DMR: Dialect = Dialect {
+        tdma_slot: false,
+        color_code: false,
+    };
 }
 
 /// Sequential reader over the comma-separated fields of one reply.
@@ -39,10 +45,16 @@ impl<'a> Fields<'a> {
         let is_err = |s: &str| matches!(s, "ERR" | "NG" | "FER" | "ORER");
         // The scanner uses both bare errors and command-prefixed errors.
         if is_err(parts[0]) || (parts.len() == 2 && is_err(parts[1])) {
-            return Err(Error::Scanner { cmd: cmd.to_string(), reply: reply.to_string() });
+            return Err(Error::Scanner {
+                cmd: cmd.to_string(),
+                reply: reply.to_string(),
+            });
         }
         if parts[0] != cmd {
-            return Err(Error::UnexpectedReply { expected: cmd, reply: reply.to_string() });
+            return Err(Error::UnexpectedReply {
+                expected: cmd,
+                reply: reply.to_string(),
+            });
         }
         Ok(Fields { cmd, parts, pos: 1 })
     }
@@ -51,12 +63,19 @@ impl<'a> Fields<'a> {
     fn raw(&mut self) -> Result<&'a str, Error> {
         let pos = self.pos;
         self.pos += 1;
-        self.parts.get(pos).copied().ok_or(Error::MissingField { cmd: self.cmd, pos })
+        self.parts
+            .get(pos)
+            .copied()
+            .ok_or(Error::MissingField { cmd: self.cmd, pos })
     }
 
     /// Build a field-value error using this reply's command name.
     fn bad(&self, pos: usize, value: &str) -> Error {
-        Error::BadValue { cmd: self.cmd, pos, value: value.to_string() }
+        Error::BadValue {
+            cmd: self.cmd,
+            pos,
+            value: value.to_string(),
+        }
     }
 
     /// Skip n fields (reserved fields).
@@ -85,7 +104,8 @@ impl<'a> Fields<'a> {
     /// Like opt, but an empty field is an error.
     pub fn req<T: FromStr>(&mut self) -> Result<T, Error> {
         let pos = self.pos;
-        self.opt()?.ok_or(Error::MissingField { cmd: self.cmd, pos })
+        self.opt()?
+            .ok_or(Error::MissingField { cmd: self.cmd, pos })
     }
 
     /// "0"/"1" flag; empty -> None.
@@ -114,7 +134,10 @@ impl<'a> Fields<'a> {
 
     /// Pair of REV/FWD index fields.
     pub fn links(&mut self) -> Result<Links, Error> {
-        Ok(Links { rev: self.link()?, fwd: self.link()? })
+        Ok(Links {
+            rev: self.link()?,
+            fwd: self.link()?,
+        })
     }
 
     /// Latitude, longitude, range, GPS-enable in that order.
@@ -137,9 +160,11 @@ pub fn parse_index_reply(cmd: &'static str, reply: &str) -> Result<Option<Index>
 pub fn read_free_blocks<S: Scanner>(sc: &mut S) -> Result<usize, Error> {
     let reply = sc.send("RMB")?;
     let value = Fields::new("RMB", &reply)?.raw()?.to_string();
-    value
-        .parse()
-        .map_err(|_| Error::BadValue { cmd: "RMB", pos: 1, value })
+    value.parse().map_err(|_| Error::BadValue {
+        cmd: "RMB",
+        pos: 1,
+        value,
+    })
 }
 
 /// Read the scanner's own memory statistics. Must be called in Program Mode.
@@ -161,7 +186,10 @@ pub fn read_scanner_memory<S: Scanner>(sc: &mut S) -> Result<ScannerMemory, Erro
 pub fn expect_ok(cmd: &'static str, reply: &str) -> Result<(), Error> {
     match Fields::new(cmd, reply)?.raw()? {
         "OK" => Ok(()),
-        _ => Err(Error::UnexpectedReply { expected: cmd, reply: reply.to_string() }),
+        _ => Err(Error::UnexpectedReply {
+            expected: cmd,
+            reply: reply.to_string(),
+        }),
     }
 }
 
@@ -291,7 +319,12 @@ impl MotBandPlan {
             // Four fields per entry: lower, upper, step, offset
             let parts = (f.opt()?, f.opt()?, f.opt()?, f.opt()?);
             if let (Some(lower), Some(upper), Some(step_code), Some(offset)) = parts {
-                *band = Some(MotBand { lower, upper, step_code, offset });
+                *band = Some(MotBand {
+                    lower,
+                    upper,
+                    step_code,
+                    offset,
+                });
             }
         }
         Ok(MotBandPlan { bands })
@@ -311,8 +344,12 @@ impl P25BandPlan {
                 continue; // unused entry, or hidden by the protect bit
             }
             let base = u64::from_str_radix(&base, 16).map_err(|_| f.bad(pos, &base))?;
-            let spacing = u32::from_str_radix(&spacing, 16).map_err(|_| f.bad(pos + 1, &spacing))?;
-            *band = Some(P25Band { base_hz: base * 5, spacing_hz: spacing * 125 });
+            let spacing =
+                u32::from_str_radix(&spacing, 16).map_err(|_| f.bad(pos + 1, &spacing))?;
+            *band = Some(P25Band {
+                base_hz: base * 5,
+                spacing_hz: spacing * 125,
+            });
         }
         Ok(P25BandPlan { bands })
     }
@@ -352,15 +389,15 @@ impl GroupRecord {
     pub fn parse(reply: &str) -> Result<Self, Error> {
         let mut f = Fields::new("GIN", reply)?;
         Ok(GroupRecord {
-            group_type: f.req()?,  // 1
-            name: Name(f.text()?), // 2
-            quick_key: f.opt()?,   // 3
-            lockout: f.flag()?,    // 4
-            links: f.links()?,     // 5-6
-            system: f.link()?,     // 7
-            child_head: f.link()?, // 8
-            child_tail: f.link()?, // 9
-            seq_no: f.opt()?,      // 10
+            group_type: f.req()?,    // 1
+            name: Name(f.text()?),   // 2
+            quick_key: f.opt()?,     // 3
+            lockout: f.flag()?,      // 4
+            links: f.links()?,       // 5-6
+            system: f.link()?,       // 7
+            child_head: f.link()?,   // 8
+            child_tail: f.link()?,   // 9
+            seq_no: f.opt()?,        // 10
             geofence: f.geofence()?, // 11-14
         })
     }
@@ -433,11 +470,11 @@ impl TgidRecord {
             links,
             system,
             group,
-            audio_type: f.opt()?,    // 12
-            number_tag: f.opt()?,    // 13
-            alert_color: f.opt()?,   // 14
-            alert_pattern: f.opt()?, // 15
-            vol_offset: f.opt()?,    // 16
+            audio_type: f.opt()?,                                 // 12
+            number_tag: f.opt()?,                                 // 13
+            alert_color: f.opt()?,                                // 14
+            alert_pattern: f.opt()?,                              // 15
+            vol_offset: f.opt()?,                                 // 16
             tdma_slot: if d.tdma_slot { f.opt()? } else { None }, // 17
         })
     }
@@ -474,6 +511,19 @@ impl LocationAlertRecord {
 pub trait Scanner {
     /// Send one command and return its reply line.
     fn send(&mut self, cmd: &str) -> Result<String, Error>;
+
+    /// Run a command whose reply is an open-ended stream until `should_stop` becomes true.
+    fn stream(
+        &mut self,
+        _start: &str,
+        _stop: &str,
+        _should_stop: &dyn Fn() -> bool,
+        _on_line: &mut dyn FnMut(String),
+    ) -> Result<(), Error> {
+        Err(Error::UnsupportedOperation(
+            "This transport cannot receive streamed scanner data.",
+        ))
+    }
 }
 
 /// Run `f` in Program Mode, and always try to exit Program Mode afterward.
@@ -548,7 +598,9 @@ pub fn read_database_with_progress<S: Scanner>(
         let kind = if info.sys_type.is_trunked() {
             read_trunked(sc, d, index, &info)?
         } else {
-            SystemKind::Conventional { groups: read_channel_groups(sc, info.child_head)? }
+            SystemKind::Conventional {
+                groups: read_channel_groups(sc, info.child_head)?,
+            }
         };
         systems.push(System {
             uid: Uid::new(),
@@ -559,11 +611,18 @@ pub fn read_database_with_progress<S: Scanner>(
         });
         progress(systems.len(), total);
     }
-    Ok(ScanDatabase { format_version: FORMAT_VERSION, model: None, systems })
+    Ok(ScanDatabase {
+        format_version: FORMAT_VERSION,
+        model: None,
+        systems,
+    })
 }
 
 /// Conventional system: groups, then channels in each group.
-fn read_channel_groups<S: Scanner>(sc: &mut S, head: Option<Index>) -> Result<Vec<ChannelGroup>, Error> {
+fn read_channel_groups<S: Scanner>(
+    sc: &mut S,
+    head: Option<Index>,
+) -> Result<Vec<ChannelGroup>, Error> {
     let mut out = Vec::new();
     for (index, info) in walk_list(sc, head, |sc, i| read_group(sc, i))? {
         // A conventional group owns a separate linked list of channels.
@@ -575,13 +634,22 @@ fn read_channel_groups<S: Scanner>(sc: &mut S, head: Option<Index>) -> Result<Ve
         .into_iter()
         .map(|(index, info)| Channel { index, info })
         .collect();
-        out.push(ChannelGroup { index, info, channels });
+        out.push(ChannelGroup {
+            index,
+            info,
+            channels,
+        });
     }
     Ok(out)
 }
 
 /// Trunked system: TRN, sites (with band plans and frequencies), then TGID groups.
-fn read_trunked<S: Scanner>(sc: &mut S, d: Dialect, sys: Index, info: &SystemRecord) -> Result<SystemKind, Error> {
+fn read_trunked<S: Scanner>(
+    sc: &mut S,
+    d: Dialect,
+    sys: Index,
+    info: &SystemRecord,
+) -> Result<SystemKind, Error> {
     let trunk = TrunkRecord::parse(&sc.send(&format!("TRN,{sys}"))?)?;
 
     let site_records = walk_list(sc, info.child_head, |sc, i| {
@@ -593,9 +661,13 @@ fn read_trunked<S: Scanner>(sc: &mut S, d: Dialect, sys: Index, info: &SystemRec
     for (index, site) in site_records {
         // P25 standard systems use ABP; Motorola sites use MCP only for custom band plans.
         let band_plan = if info.sys_type == SystemType::P25Standard {
-            Some(BandPlan::P25(P25BandPlan::parse(&sc.send(&format!("ABP,{index}"))?)?))
+            Some(BandPlan::P25(P25BandPlan::parse(
+                &sc.send(&format!("ABP,{index}"))?,
+            )?))
         } else if site.mot_band_type == Some(MotBandType::Custom) {
-            Some(BandPlan::Motorola(MotBandPlan::parse(&sc.send(&format!("MCP,{index}"))?)?))
+            Some(BandPlan::Motorola(MotBandPlan::parse(
+                &sc.send(&format!("MCP,{index}"))?,
+            )?))
         } else {
             None
         };
@@ -607,7 +679,12 @@ fn read_trunked<S: Scanner>(sc: &mut S, d: Dialect, sys: Index, info: &SystemRec
         .into_iter()
         .map(|(index, info)| TrunkFreq { index, info })
         .collect();
-        sites.push(Site { index, info: site, band_plan, frequencies });
+        sites.push(Site {
+            index,
+            info: site,
+            band_plan,
+            frequencies,
+        });
     }
 
     let mut tgid_groups = Vec::new();
@@ -624,7 +701,11 @@ fn read_trunked<S: Scanner>(sc: &mut S, d: Dialect, sys: Index, info: &SystemRec
         tgid_groups.push(TgidGroup { index, info, tgids });
     }
 
-    Ok(SystemKind::Trunked { trunk, sites, tgid_groups })
+    Ok(SystemKind::Trunked {
+        trunk,
+        sites,
+        tgid_groups,
+    })
 }
 
 /// Builder for comma-separated set commands.
@@ -642,7 +723,8 @@ impl SetCmd {
     }
     /// Optional value; None -> empty field (leave unchanged).
     pub fn opt<T: fmt::Display>(mut self, v: &Option<T>) -> Self {
-        self.0.push(v.as_ref().map(|x| x.to_string()).unwrap_or_default());
+        self.0
+            .push(v.as_ref().map(|x| x.to_string()).unwrap_or_default());
         self
     }
     /// Optional 0/1 flag.
@@ -662,7 +744,10 @@ impl SetCmd {
     }
     /// Optional latitude/longitude/range/enable quartet.
     pub fn geofence(self, g: &GeoFence) -> Self {
-        self.opt(&g.latitude).opt(&g.longitude).opt(&g.range).flag(g.enabled)
+        self.opt(&g.latitude)
+            .opt(&g.longitude)
+            .opt(&g.range)
+            .flag(g.enabled)
     }
     /// Join the fields with commas while retaining empty placeholders.
     pub fn build(self) -> String {
@@ -754,7 +839,12 @@ impl TgidRecord {
             .opt(&self.alert_pattern)
             .opt(&self.vol_offset);
         // Do not append an empty placeholder on models whose TIN format ends earlier.
-        if d.tdma_slot { cmd.opt(&self.tdma_slot) } else { cmd }.build()
+        if d.tdma_slot {
+            cmd.opt(&self.tdma_slot)
+        } else {
+            cmd
+        }
+        .build()
     }
 }
 
@@ -821,7 +911,12 @@ impl TrunkFreqRecord {
             .opt(&self.vol_offset)
             .rsv(1);
         // Do not append a color-code placeholder for models whose TFQ format ends earlier.
-        if d.color_code { cmd.opt(&self.color_code) } else { cmd }.build()
+        if d.color_code {
+            cmd.opt(&self.color_code)
+        } else {
+            cmd
+        }
+        .build()
     }
 }
 
@@ -847,7 +942,9 @@ impl P25BandPlan {
         let mut cmd = SetCmd::new("ABP").val(site);
         for band in &self.bands {
             cmd = match band {
-                Some(b) => cmd.val(format!("{:X}", b.base_hz / 5)).val(format!("{:X}", b.spacing_hz / 125)),
+                Some(b) => cmd
+                    .val(format!("{:X}", b.base_hz / 5))
+                    .val(format!("{:X}", b.spacing_hz / 125)),
                 None => cmd.rsv(2),
             };
         }
@@ -880,7 +977,11 @@ pub fn write_system<S: Scanner>(sc: &mut S, d: Dialect, sys: &System) -> Result<
                 }
             }
         }
-        SystemKind::Trunked { trunk, sites, tgid_groups } => {
+        SystemKind::Trunked {
+            trunk,
+            sites,
+            tgid_groups,
+        } => {
             expect_ok("TRN", &sc.send(&trunk.to_set(new_sys))?)?;
             // Build the parent site before adding its frequencies.
             for site in sites {
@@ -888,8 +989,12 @@ pub fn write_system<S: Scanner>(sc: &mut S, d: Dialect, sys: &System) -> Result<
                 // The band type must be set before a custom band plan is accepted.
                 expect_ok("SIF", &sc.send(&site.info.to_set(new_site))?)?;
                 match &site.band_plan {
-                    Some(BandPlan::Motorola(plan)) => expect_ok("MCP", &sc.send(&plan.to_set(new_site))?)?,
-                    Some(BandPlan::P25(plan)) => expect_ok("ABP", &sc.send(&plan.to_set(new_site))?)?,
+                    Some(BandPlan::Motorola(plan)) => {
+                        expect_ok("MCP", &sc.send(&plan.to_set(new_site))?)?
+                    }
+                    Some(BandPlan::P25(plan)) => {
+                        expect_ok("ABP", &sc.send(&plan.to_set(new_site))?)?
+                    }
                     None => {}
                 }
                 for freq in &site.frequencies {
@@ -913,7 +1018,11 @@ pub fn write_system<S: Scanner>(sc: &mut S, d: Dialect, sys: &System) -> Result<
 
 /// Recreate a conventional system on the scanner. Call in Program Mode.
 /// Returns the new system index.
-pub fn write_conventional<S: Scanner>(sc: &mut S, d: Dialect, sys: &System) -> Result<Index, Error> {
+pub fn write_conventional<S: Scanner>(
+    sc: &mut S,
+    d: Dialect,
+    sys: &System,
+) -> Result<Index, Error> {
     match sys.kind {
         SystemKind::Conventional { .. } => write_system(sc, d, sys),
         SystemKind::Trunked { .. } => Err(Error::WrongSystemKind),
@@ -979,7 +1088,9 @@ pub fn download(
         // Mark every system as an unmodified import so later downloads can merge into it.
         for sys in &mut db.systems {
             sys.provenance = Provenance {
-                source: Source::Scanner { model: model.to_owned() },
+                source: Source::Scanner {
+                    model: model.to_owned(),
+                },
                 external_id: None,
                 baseline: Some(sys.content_hash()),
             };
@@ -990,8 +1101,15 @@ pub fn download(
 }
 
 /// Shared [`ScannerModel::upload`](super::ScannerModel::upload) for the family.
-pub fn upload(link: &mut dyn Scanner, d: Dialect, db: &ScanDatabase, progress: super::Progress) -> Result<(), Error> {
-    with_program_mode(&mut super::DynLink(link), |sc| write_database_with_progress(sc, d, db, progress))
+pub fn upload(
+    link: &mut dyn Scanner,
+    d: Dialect,
+    db: &ScanDatabase,
+    progress: super::Progress,
+) -> Result<(), Error> {
+    with_program_mode(&mut super::DynLink(link), |sc| {
+        write_database_with_progress(sc, d, db, progress)
+    })
 }
 
 /// A system as listed for quick-key control.
@@ -1015,13 +1133,21 @@ pub struct GroupSummary {
 /// Each page lists keys 1-9 then the multiple of ten (`PAGE0` ends with key 0).
 pub fn qsl_position(key: u8) -> usize {
     let page = usize::from(key / 10);
-    let digit = if key % 10 == 0 { 9 } else { usize::from(key % 10) - 1 };
+    let digit = if key % 10 == 0 {
+        9
+    } else {
+        usize::from(key % 10) - 1
+    };
     page * 10 + digit
 }
 
 /// Position of group quick key `key` in the 10 digits of `QGL` (1-9, then 0; 10 is also the last).
 pub fn qgl_position(key: u8) -> usize {
-    if key == 0 || key == 10 { 9 } else { usize::from(key) - 1 }
+    if key == 0 || key == 10 {
+        9
+    } else {
+        usize::from(key) - 1
+    }
 }
 
 /// Reads `QSL` as 100 digits (see [`qsl_position`]): 0 unassigned, 1 on, 2 off.
@@ -1034,7 +1160,11 @@ pub fn read_qsl<S: Scanner>(sc: &mut S) -> Result<String, Error> {
         digits.push_str(f.raw()?);
     }
     if digits.len() != 100 || !digits.bytes().all(|b| (b'0'..=b'2').contains(&b)) {
-        return Err(Error::BadValue { cmd: "QSL", pos: 1, value: digits });
+        return Err(Error::BadValue {
+            cmd: "QSL",
+            pos: 1,
+            value: digits,
+        });
     }
     Ok(digits)
 }
@@ -1050,7 +1180,11 @@ pub fn read_qgl<S: Scanner>(sc: &mut S, sys: Index) -> Result<String, Error> {
     let reply = sc.send(&format!("QGL,{sys}"))?;
     let digits = Fields::new("QGL", &reply)?.raw()?.to_owned();
     if digits.len() != 10 || !digits.bytes().all(|b| (b'0'..=b'2').contains(&b)) {
-        return Err(Error::BadValue { cmd: "QGL", pos: 1, value: digits });
+        return Err(Error::BadValue {
+            cmd: "QGL",
+            pos: 1,
+            value: digits,
+        });
     }
     Ok(digits)
 }
@@ -1082,7 +1216,10 @@ pub fn read_system_summaries<S: Scanner>(sc: &mut S) -> Result<Vec<SystemSummary
 }
 
 /// Lists the groups of system `sys` with their quick keys. Must be called in Program Mode.
-pub fn read_group_summaries<S: Scanner>(sc: &mut S, sys: Index) -> Result<Vec<GroupSummary>, Error> {
+pub fn read_group_summaries<S: Scanner>(
+    sc: &mut S,
+    sys: Index,
+) -> Result<Vec<GroupSummary>, Error> {
     let head = SystemRecord::parse(&sc.send(&format!("SIN,{sys}"))?)?.child_head;
     Ok(walk_list(sc, head, |sc, i| read_group(sc, i))?
         .into_iter()
@@ -1155,7 +1292,10 @@ mod tests {
         assert_eq!(d.len(), 100);
         assert_eq!(&d[..2], "12");
         assert_eq!(&d[99..], "2");
-        let mut rec = Recorder { sent: vec![], next: 0 };
+        let mut rec = Recorder {
+            sent: vec![],
+            next: 0,
+        };
         write_qsl(&mut rec, &d).unwrap();
         assert!(rec.sent[0].starts_with("QSL,1200000000,0000000000,"));
         assert!(read_qsl(&mut Mock(HashMap::from([("QSL", "QSL,12")]))).is_err());
@@ -1165,9 +1305,13 @@ mod tests {
     /// Checks an upload writes the expected systems and reports final progress.
     fn write_database_creates_every_system() {
         let db = ScanDatabase::new_placeholder();
-        let mut sc = Recorder { sent: vec![], next: 0 };
+        let mut sc = Recorder {
+            sent: vec![],
+            next: 0,
+        };
         let mut last = (0, 0);
-        write_database_with_progress(&mut sc, Dialect::DIGITAL_DMR, &db, |d, t| last = (d, t)).unwrap();
+        write_database_with_progress(&mut sc, Dialect::DIGITAL_DMR, &db, |d, t| last = (d, t))
+            .unwrap();
         assert_eq!(last, (db.systems.len(), db.systems.len()));
         assert_eq!(sc.sent[0], "SIH");
         assert!(sc.sent.iter().any(|c| c.starts_with("CSY,")));
@@ -1203,7 +1347,12 @@ mod tests {
         }
         assert_eq!(
             db.validate(),
-            vec![ValidationError::DuplicateGroupQuickKey { system: 0, key: 3, first: 0, duplicate: 1 }]
+            vec![ValidationError::DuplicateGroupQuickKey {
+                system: 0,
+                key: 3,
+                first: 0,
+                duplicate: 1
+            }]
         );
     }
 
@@ -1223,16 +1372,25 @@ mod tests {
             trunk: TrunkRecord::default(),
             sites: vec![Site {
                 index: Index::default(),
-                info: SiteRecord { name: Name("Bad_Site".to_string()), ..Default::default() },
+                info: SiteRecord {
+                    name: Name("Bad_Site".to_string()),
+                    ..Default::default()
+                },
                 band_plan: None,
                 frequencies: Vec::new(),
             }],
             tgid_groups: vec![TgidGroup {
                 index: Index::default(),
-                info: GroupRecord { name: Name("Bad_TGID_Group".to_string()), ..Default::default() },
+                info: GroupRecord {
+                    name: Name("Bad_TGID_Group".to_string()),
+                    ..Default::default()
+                },
                 tgids: vec![TgidEntry {
                     index: Index::default(),
-                    info: TgidRecord { name: Name("Bad_Talkgroup".to_string()), ..Default::default() },
+                    info: TgidRecord {
+                        name: Name("Bad_Talkgroup".to_string()),
+                        ..Default::default()
+                    },
                 }],
             }],
         };
@@ -1249,7 +1407,11 @@ mod tests {
             "Bad_TGID_Group",
             "Bad_Talkgroup",
         ] {
-            assert!(messages.iter().any(|message| message.contains(invalid_name)));
+            assert!(
+                messages
+                    .iter()
+                    .any(|message| message.contains(invalid_name))
+            );
         }
     }
 
@@ -1277,10 +1439,22 @@ mod tests {
     #[test]
     /// Checks supported tone codes and rejects undefined wire values.
     fn tone_codes() {
-        assert_eq!(ToneCode::from_wire(76).unwrap().tone(), Tone::Ctcss { tenths_hz: 1000 });
-        assert_eq!(ToneCode::from_wire(128).unwrap().tone(), Tone::Dcs { code: 23 });
-        assert_eq!(ToneCode::from_wire(239).unwrap().tone(), Tone::Dcs { code: 214 });
-        assert_eq!(ToneCode::from_tone(Tone::Dcs { code: 6 }).unwrap().wire(), 232);
+        assert_eq!(
+            ToneCode::from_wire(76).unwrap().tone(),
+            Tone::Ctcss { tenths_hz: 1000 }
+        );
+        assert_eq!(
+            ToneCode::from_wire(128).unwrap().tone(),
+            Tone::Dcs { code: 23 }
+        );
+        assert_eq!(
+            ToneCode::from_wire(239).unwrap().tone(),
+            Tone::Dcs { code: 214 }
+        );
+        assert_eq!(
+            ToneCode::from_tone(Tone::Dcs { code: 6 }).unwrap().wire(),
+            232
+        );
         assert!(ToneCode::from_wire(120).is_none()); // undefined gap
     }
 
@@ -1288,7 +1462,10 @@ mod tests {
     /// Checks NAC and color-code text representations.
     fn digital_codes() {
         assert_eq!("293".parse::<DigitalCode>(), Ok(DigitalCode::Nac(0x293)));
-        assert_eq!("100A".parse::<DigitalCode>(), Ok(DigitalCode::ColorCode(10)));
+        assert_eq!(
+            "100A".parse::<DigitalCode>(),
+            Ok(DigitalCode::ColorCode(10))
+        );
         assert_eq!(DigitalCode::ColorCode(10).to_string(), "100A");
     }
 
@@ -1301,7 +1478,13 @@ mod tests {
             reply.push_str(",0,0"); // fifteen unused entries
         }
         let plan = P25BandPlan::parse(&reply).unwrap();
-        assert_eq!(plan.bands[0], Some(P25Band { base_hz: 851_006_250, spacing_hz: 6_250 }));
+        assert_eq!(
+            plan.bands[0],
+            Some(P25Band {
+                base_hz: 851_006_250,
+                spacing_hz: 6_250
+            })
+        );
         assert!(plan.bands[1..].iter().all(Option::is_none));
     }
 
@@ -1311,7 +1494,13 @@ mod tests {
         let reply = "CIN,Dispatch,01545500,NFM,0,0,0,0,0,0,0,123,125,10,11,,0,,NONE,OFF,0,0";
         let ch = ChannelRecord::parse(reply).unwrap();
         assert_eq!(ch.freq, Some(Freq(1_545_500)));
-        assert_eq!(ch.links, Links { rev: Some(Index(123)), fwd: Some(Index(125)) });
+        assert_eq!(
+            ch.links,
+            Links {
+                rev: Some(Index(123)),
+                fwd: Some(Index(125))
+            }
+        );
         assert_eq!(ch.nac, None); // empty field
         // Link fields drop out and the index goes up front
         assert_eq!(
@@ -1323,9 +1512,18 @@ mod tests {
     #[test]
     /// Checks scanner and unexpected-reply errors are reported distinctly.
     fn scanner_errors_are_detected() {
-        assert!(matches!(SystemRecord::parse("NG"), Err(Error::Scanner { .. })));
-        assert!(matches!(SystemRecord::parse("SIN,ERR"), Err(Error::Scanner { .. })));
-        assert!(matches!(SystemRecord::parse("CIN,x"), Err(Error::UnexpectedReply { .. })));
+        assert!(matches!(
+            SystemRecord::parse("NG"),
+            Err(Error::Scanner { .. })
+        ));
+        assert!(matches!(
+            SystemRecord::parse("SIN,ERR"),
+            Err(Error::Scanner { .. })
+        ));
+        assert!(matches!(
+            SystemRecord::parse("CIN,x"),
+            Err(Error::UnexpectedReply { .. })
+        ));
     }
 
     #[test]
@@ -1343,10 +1541,16 @@ mod tests {
             ("EPG", "EPG,OK"),
             ("SIH", "SIH,10"),
             // System 10: one group (11), no neighbours
-            ("SIN,10", "SIN,CNV,County,1,0,0,2,,,,,,-1,-1,11,11,1,.,,,,,,NONE,0,0,0,0,"),
+            (
+                "SIN,10",
+                "SIN,CNV,County,1,0,0,2,,,,,,-1,-1,11,11,1,.,,,,,,NONE,0,0,0,0,",
+            ),
             // Group 11: one channel (12)
             ("GIN,11", "GIN,C,Fireground,1,0,-1,-1,10,12,12,1,,,,"),
-            ("CIN,12", "CIN,Dispatch,01545500,NFM,0,0,0,0,0,0,0,-1,-1,10,11,,0,,NONE,OFF,0,0"),
+            (
+                "CIN,12",
+                "CIN,Dispatch,01545500,NFM,0,0,0,0,0,0,0,-1,-1,10,11,,0,,NONE,OFF,0,0",
+            ),
         ]));
         let db = with_program_mode(&mut sc, |sc| read_database(sc, Dialect::DIGITAL_DMR)).unwrap();
 
@@ -1372,9 +1576,15 @@ mod tests {
             ("PRG", "PRG,OK"),
             ("EPG", "EPG,OK"),
             ("SIH", "SIH,10"),
-            ("SIN,10", "SIN,CNV,County,1,0,0,2,,,,,,-1,-1,11,11,1,.,,,,,,NONE,0,0,0,0,"),
+            (
+                "SIN,10",
+                "SIN,CNV,County,1,0,0,2,,,,,,-1,-1,11,11,1,.,,,,,,NONE,0,0,0,0,",
+            ),
             ("GIN,11", "GIN,C,Fireground,1,0,-1,-1,10,12,12,1,,,,"),
-            ("CIN,12", "CIN,Dispatch,01545500,NFM,0,0,0,0,0,0,0,-1,-1,10,11,,0,,NONE,OFF,0,0"),
+            (
+                "CIN,12",
+                "CIN,Dispatch,01545500,NFM,0,0,0,0,0,0,0,-1,-1,10,11,,0,,NONE,OFF,0,0",
+            ),
         ]));
         let db = with_program_mode(&mut sc, |sc| read_database(sc, Dialect::DIGITAL_DMR)).unwrap();
         let text = ron::ser::to_string_pretty(&db, ron::ser::PrettyConfig::default()).unwrap();
@@ -1393,13 +1603,19 @@ mod tests {
     #[test]
     /// Checks the non-DMR dialect omits the DMR-only set-command fields.
     fn no_dmr_dialect_drops_trailing_fields() {
-        let tgid = TgidRecord { tdma_slot: Some(TdmaSlot::Slot1), ..Default::default() };
+        let tgid = TgidRecord {
+            tdma_slot: Some(TdmaSlot::Slot1),
+            ..Default::default()
+        };
         let full = tgid.to_set(Index(5), Dialect::DIGITAL_DMR);
         let short = tgid.to_set(Index(5), Dialect::NO_DMR);
         assert_eq!(full.split(',').count(), short.split(',').count() + 1);
         assert!(full.ends_with(",1") && !short.ends_with(",1"));
 
-        let freq = TrunkFreqRecord { color_code: Some(ColorCodeSetting::Search), ..Default::default() };
+        let freq = TrunkFreqRecord {
+            color_code: Some(ColorCodeSetting::Search),
+            ..Default::default()
+        };
         let full = freq.to_set(Index(5), Dialect::DIGITAL_DMR);
         let short = freq.to_set(Index(5), Dialect::NO_DMR);
         assert_eq!(full.split(',').count(), short.split(',').count() + 1);
