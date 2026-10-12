@@ -1519,8 +1519,9 @@ pub fn commands(
             if legacy {
                 return Ok(vec![format!("RF{wire:08}?")]);
             }
-            // SPEC: XT/P2 QSH includes reserved/modulation fields.
-            let modulation = modulation.as_deref().filter(|m| *m != "AUTO").unwrap_or("");
+            // SPEC: XT/P2 QSH places modulation after one reserved field. Always send a
+            // modulation; callers without an override use the scanner's AUTO selection.
+            let modulation = modulation.as_deref().unwrap_or("AUTO");
             vec![format!("QSH,{wire:08},,{modulation}")]
         }
         Action::JumpToTag {
@@ -1802,7 +1803,7 @@ mod tests {
                 freq_hz: 462_562_500,
                 modulation: Some("AUTO".into())
             }),
-            ["QSH,04625625,,"]
+            ["QSH,04625625,,AUTO"]
         );
         assert_eq!(
             one(Action::QuickTune {
@@ -1810,6 +1811,13 @@ mod tests {
                 modulation: Some("NFM".into())
             }),
             ["QSH,01624000,,NFM"]
+        );
+        assert_eq!(
+            one(Action::QuickTune {
+                freq_hz: 162_400_000,
+                modulation: None
+            }),
+            ["QSH,01624000,,AUTO"]
         );
     }
 

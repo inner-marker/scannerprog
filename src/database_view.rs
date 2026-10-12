@@ -515,7 +515,7 @@ fn select_field(
     }
 }
 
-/// Lists supported modulation choices, with a blank option for automatic selection.
+/// Lists supported modulation choices. AUTO is explicit; modulation is never blank.
 fn modulation_options() -> Vec<String> {
     [
         Modulation::Auto,
@@ -527,10 +527,24 @@ fn modulation_options() -> Vec<String> {
     ]
     .into_iter()
     .map(|m| m.to_string())
-    .fold(vec![String::new()], |mut v, m| {
-        v.push(m);
-        v
-    })
+    .collect()
+}
+
+fn modulation_string(modulation: &Option<Modulation>) -> String {
+    modulation.unwrap_or(Modulation::Auto).to_string()
+}
+
+#[cfg(test)]
+mod modulation_tests {
+    use super::{modulation_options, modulation_string};
+
+    #[test]
+    fn modulation_choices_and_blank_values_default_to_auto() {
+        let options = modulation_options();
+        assert_eq!(options.first().map(String::as_str), Some("AUTO"));
+        assert!(options.iter().all(|option| !option.is_empty()));
+        assert_eq!(modulation_string(&None), "AUTO");
+    }
 }
 
 /// Toggles an item between view and edit mode. Shown at the end of each system, group and row.
@@ -1189,7 +1203,7 @@ fn ChannelRow(si: usize, gi: usize, ci: usize, channel: Channel) -> Element {
         tr {
             td { {name_field(ed, channel.info.name.to_string(), name)} }
             td { {freq_field(ed, &channel.info.freq, freq)} }
-            td { {select_field(modulation_options(), ed, opt_string(&channel.info.modulation), modulation)} }
+            td { {select_field(modulation_options(), ed, modulation_string(&channel.info.modulation), modulation)} }
             td { {text_field("text", ed, opt_string(&channel.info.tone), tone)} }
             td { {check_field(ed, &channel.info.lockout, lockout)} }
             td {
@@ -1199,7 +1213,7 @@ fn ChannelRow(si: usize, gi: usize, ci: usize, channel: Channel) -> Element {
                         if now {
                             name.set(loaded.name.to_string());
                             freq.set(freq_string(&loaded.freq));
-                            modulation.set(opt_string(&loaded.modulation));
+                            modulation.set(modulation_string(&loaded.modulation));
                             tone.set(opt_string(&loaded.tone));
                             lockout.set(loaded.lockout.unwrap_or(false));
                         } else {
@@ -1211,7 +1225,11 @@ fn ChannelRow(si: usize, gi: usize, ci: usize, channel: Channel) -> Element {
                                     let i = &mut c.info;
                                     i.name = commit_name(&name(), &i.name);
                                     i.freq = commit_freq(&freq(), &i.freq);
-                                    i.modulation = commit_opt(&modulation(), &i.modulation);
+                                    i.modulation = Some(
+                                        modulation()
+                                            .parse()
+                                            .unwrap_or(Modulation::Auto),
+                                    );
                                     i.tone = commit_opt(&tone(), &i.tone);
                                     i.lockout = commit_bool(lockout(), &i.lockout);
                                 }

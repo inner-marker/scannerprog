@@ -1,6 +1,6 @@
 //! Merging systems from an import (a scanner download, later RadioReference) into the database.
 
-use crate::database::{Provenance, ScanDatabase, Source, System};
+use crate::database::{Provenance, ScanDatabase, Source, System, normalize_channel_modulations};
 
 /// What a merge did, for the message shown to the user.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -53,11 +53,16 @@ fn same_system(existing: &System, incoming: &System) -> bool {
 ///
 /// Systems in `db` that are absent from the import are never removed. A database that is still
 /// just the starting placeholder is replaced outright.
-pub fn merge_import(db: &mut ScanDatabase, source: &Source, incoming: Vec<System>) -> MergeReport {
+pub fn merge_import(
+    db: &mut ScanDatabase,
+    source: &Source,
+    mut incoming: Vec<System>,
+) -> MergeReport {
     let mut report = MergeReport::default();
     if db.is_placeholder() {
         db.systems.clear();
     }
+    normalize_channel_modulations(&mut incoming);
     // Each existing system can be matched by at most one incoming system.
     let mut claimed = vec![false; db.systems.len()];
 
@@ -95,7 +100,10 @@ pub fn merge_import(db: &mut ScanDatabase, source: &Source, incoming: Vec<System
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::database::{Name, SystemKind, SystemRecord, SystemType, Uid};
+    use crate::database::{
+        Channel, ChannelGroup, ChannelRecord, GroupRecord, Modulation, Name, SystemKind,
+        SystemRecord, SystemType, Uid,
+    };
 
     fn system(name: &str) -> System {
         System {
@@ -124,6 +132,34 @@ mod tests {
         assert_eq!(r.added, 1);
         assert_eq!(db.systems.len(), 1);
         assert_eq!(db.systems[0].info.name.as_str(), "Fire");
+    }
+
+    #[test]
+    fn imported_blank_channel_modulation_becomes_auto() {
+        let mut incoming = system("Fire");
+        let mut channel = ChannelRecord::default();
+        channel.modulation = None;
+        incoming.kind = SystemKind::Conventional {
+            groups: vec![ChannelGroup {
+                index: Default::default(),
+                info: GroupRecord::default(),
+                channels: vec![Channel {
+                    index: Default::default(),
+                    info: channel,
+                }],
+            }],
+        };
+        let mut db = ScanDatabase::default();
+
+        merge_import(&mut db, &scanner(), vec![incoming]);
+
+        let SystemKind::Conventional { groups } = &db.systems[0].kind else {
+            panic!("imported system should be conventional");
+        };
+        assert_eq!(
+            groups[0].channels[0].info.modulation,
+            Some(Modulation::Auto)
+        );
     }
 
     #[test]

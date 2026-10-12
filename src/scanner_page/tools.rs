@@ -25,7 +25,7 @@ const MODULATIONS: [&str; 6] = ["AUTO", "AM", "FM", "NFM", "WFM", "FMB"];
 /// Parses a MHz entry such as `162.55` into hertz.
 fn parse_mhz(text: &str) -> Option<u64> {
     let mhz: f64 = text.trim().parse().ok()?;
-    (mhz > 0.0 && mhz < 10_000.0).then(|| (mhz * 1_000_000.0).round() as u64)
+    (mhz.is_finite() && mhz > 0.0 && mhz < 10_000.0).then(|| (mhz * 1_000_000.0).round() as u64)
 }
 
 /// Tune straight to a frequency.
@@ -237,7 +237,10 @@ pub fn ActivityLog() -> Element {
                                         blocked: if hz.is_none() { Some("This reception has no frequency to tune to.".to_owned()) } else { None },
                                         onclick: move |()| {
                                             if let Some(freq_hz) = hz {
-                                                run(Action::QuickTune { freq_hz, modulation: None });
+                                                run(Action::QuickTune {
+                                                    freq_hz,
+                                                    modulation: Some("AUTO".into()),
+                                                });
                                             }
                                         },
                                         "Tune"
@@ -378,12 +381,24 @@ pub fn BottomDrawer() -> Element {
                         Tab::Spectrum => rsx! {
                             SpectrumView {}
                         },
-                        Tab::Remote => rsx! {
-                            VirtualRemote {}
-                        },
+                        Tab::Remote => rsx! { VirtualRemote {} },
                     }
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_mhz;
+
+    #[test]
+    fn parses_quick_tune_frequency_in_mhz() {
+        assert_eq!(parse_mhz("162.550"), Some(162_550_000));
+        assert_eq!(parse_mhz(" 462.5625 "), Some(462_562_500));
+        assert_eq!(parse_mhz("0"), None);
+        assert_eq!(parse_mhz("NaN"), None);
+        assert_eq!(parse_mhz("not a frequency"), None);
     }
 }

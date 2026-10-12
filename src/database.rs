@@ -768,7 +768,7 @@ pub struct GroupRecord {
 }
 
 /// A conventional channel, from CIN.
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 pub struct ChannelRecord {
     pub name: Name,
     pub freq: Option<Freq>,
@@ -789,6 +789,32 @@ pub struct ChannelRecord {
     pub alert_color: Option<AlertColor>,
     pub alert_pattern: Option<AlertPattern>,
     pub vol_offset: Option<i8>, // -3 to +3
+}
+
+impl Default for ChannelRecord {
+    fn default() -> Self {
+        Self {
+            name: Name::default(),
+            freq: None,
+            modulation: Some(Modulation::Auto),
+            tone: None,
+            tone_lockout: None,
+            lockout: None,
+            priority: None,
+            attenuator: None,
+            alert_tone: None,
+            alert_level: None,
+            links: Links::default(),
+            system: None,
+            group: None,
+            audio_type: None,
+            nac: None,
+            number_tag: None,
+            alert_color: None,
+            alert_pattern: None,
+            vol_offset: None,
+        }
+    }
 }
 
 /// A talkgroup ID entry, from TIN.
@@ -892,11 +918,25 @@ pub struct Provenance {
     pub baseline: Option<u64>,
 }
 
+pub(crate) fn normalize_channel_modulations(systems: &mut [System]) {
+    for system in systems {
+        if let SystemKind::Conventional { groups } = &mut system.kind {
+            for channel in groups
+                .iter_mut()
+                .flat_map(|group| group.channels.iter_mut())
+            {
+                channel.info.modulation.get_or_insert(Modulation::Auto);
+            }
+        }
+    }
+}
+
 impl ScanDatabase {
     /// Brings a database loaded from an older file up to [`FORMAT_VERSION`].
     /// Every system gets an identity, and systems from a scanner file are marked as unmodified imports.
     pub fn migrate(&mut self) {
         let legacy = self.format_version < 1;
+        normalize_channel_modulations(&mut self.systems);
         for sys in &mut self.systems {
             if sys.uid == Uid::default() {
                 sys.uid = Uid::new();
@@ -1519,6 +1559,26 @@ mod tests {
         assert!(db.is_placeholder());
         db.systems[0].info.hold_time = Some(4);
         assert!(!db.is_placeholder());
+    }
+
+    #[test]
+    fn channel_modulation_defaults_and_migrates_to_auto() {
+        assert_eq!(ChannelRecord::default().modulation, Some(Modulation::Auto));
+
+        let mut db = ScanDatabase::new_placeholder();
+        if let SystemKind::Conventional { groups } = &mut db.systems[0].kind {
+            groups[0].channels[0].info.modulation = None;
+        } else {
+            panic!("placeholder system should be conventional");
+        }
+        db.migrate();
+        let SystemKind::Conventional { groups } = &db.systems[0].kind else {
+            panic!("placeholder system should be conventional");
+        };
+        assert_eq!(
+            groups[0].channels[0].info.modulation,
+            Some(Modulation::Auto)
+        );
     }
 
     #[test]

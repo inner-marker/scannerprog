@@ -14,6 +14,8 @@
 
 - Added the BCD996XT and BCD996P2 (database and live control; untested on hardware). Their volume (0–29) and squelch (0–19) ranges differ, there is no power-off command, and the `[RECORD]` fields are not preserved.
 - Scanner page Phase 2:
+  - Fixed Quick Tune commands: XT/P2 commands always send a modulation, defaulting to the documented `AUTO` value instead of emitting or implying a blank modulation.
+  - New conventional channels now explicitly default to `AUTO` modulation. Existing blank channel modulations are migrated to `AUTO`, and the channel editor no longer offers a blank modulation.
   - Added System/Group Quick Key editing with paging, digit shortcuts, and a visible Program Mode badge. Each toggle is written to the scanner immediately in its own Program Mode session (`PRG` → write → `EPG` → `KEY,S,P`); there is no staging or **Apply** step.
   - A system quick-key toggle now writes the system lockout of every system on that key alongside the `QSL` digit, so keys shared by several systems — and systems already locked out on the front panel — follow the toggle. Writes are verified by read-back and report a warning if the scanner rejects them.
   - Added actor-owned 15-second polling of the scanner's QSL, expanded QGL, and system lockout state, with explicit **Scanning**/**Off** status in the Quick Keys panel. Front-panel changes now flow through the same persistent serial polling loop as GLG/STS instead of a UI-lifecycle timer.

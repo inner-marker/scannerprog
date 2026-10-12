@@ -141,7 +141,10 @@ pub fn ModeBar() -> Element {
                 blocked: if live_freq.is_none() { Some("Quick Search starts from the current frequency; nothing is being received.".to_owned()) } else { None },
                 onclick: move |()| {
                     if let Some(freq_hz) = live_freq {
-                        run(Action::QuickTune { freq_hz, modulation: None });
+                        run(Action::QuickTune {
+                            freq_hz,
+                            modulation: Some("AUTO".into()),
+                        });
                     }
                 },
                 "Quick Search"
