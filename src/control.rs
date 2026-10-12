@@ -6,7 +6,7 @@
 use dioxus::prelude::*;
 use std::collections::VecDeque;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
@@ -33,6 +33,7 @@ const POLL_INTERVAL: Duration = Duration::from_millis(200);
 
 /// Volume and squelch are re-read every this many polls (about 5 s), in case the knobs are turned.
 const LEVEL_EVERY: u32 = 25;
+const QUICK_KEY_EVERY: u32 = 75;
 
 /// Consecutive failed polls before the connection is shown as degraded.
 const DEGRADED_AFTER: u32 = 3;
@@ -300,6 +301,11 @@ enum Event {
         latency: Duration,
     },
     LegacyUnsolicited(String),
+    QuickKeyState {
+        qsl: String,
+        systems: Vec<SystemSummary>,
+        group: Option<(crate::database::Index, String)>,
+    },
     WaterfallStatus(String),
     WaterfallFrame(String),
     /// A volume or squelch reading.
@@ -325,6 +331,7 @@ enum Event {
 
 /// Handle to the running actor. Dropping the sender stops the thread.
 static LINK: Mutex<Option<mpsc::Sender<Request>>> = Mutex::new(None);
+static EXPANDED_GROUP_INDEX: AtomicU16 = AtomicU16::new(u16::MAX);
 
 /// Queues a request for the actor.
 fn submit(request: Request) -> Result<(), String> {
@@ -783,6 +790,27 @@ fn poll_once(
     })
 }
 
+fn poll_quick_keys_once(link: &mut dyn Scanner) -> Result<Event, Error> {
+    let expanded = EXPANDED_GROUP_INDEX.load(Ordering::Relaxed);
+    let state = models::with_program_mode(&mut DynLink(link), |link| {
+        let qsl = models::read_qsl(link)?;
+        let systems = models::read_system_summaries(link)?;
+        let group = (expanded != u16::MAX)
+            .then(|| {
+                let index = crate::database::Index(expanded);
+                models::read_qgl(link, index).map(|digits| (index, digits))
+            })
+            .transpose()?;
+        Ok((qsl, systems, group))
+    })?;
+    resume_scanning(&mut DynLink(link));
+    Ok(Event::QuickKeyState {
+        qsl: state.0,
+        systems: state.1,
+        group: state.2,
+    })
+}
+
 /// Thread body: opens the port, then alternates between queued commands and status polls
 /// until the sender is dropped or the scanner stops answering.
 fn run_actor(
@@ -861,6 +889,26 @@ fn run_actor(
                             failures = 0;
                             if events.send(poll).is_err() {
                                 return Ok(());
+                            }
+                            if tick % QUICK_KEY_EVERY == 0
+                                && matches!(family, Family::EarlyComma | Family::Gen1 | Family::Xt)
+                            {
+                                let _ = events.send(Event::ProgramMode(true));
+                                let state = poll_quick_keys_once(&mut link);
+                                let _ = events.send(Event::ProgramMode(false));
+                                match state {
+                                    Ok(state) => {
+                                        if events.send(state).is_err() {
+                                            return Ok(());
+                                        }
+                                    }
+                                    Err(error) => {
+                                        let _ = events.send(Event::Log {
+                                            tx: false,
+                                            text: format!("! quick-key state poll failed: {error}"),
+                                        });
+                                    }
+                                }
                             }
                         }
                         Err(e) => {
@@ -1046,6 +1094,35 @@ fn apply_event(event: Event) -> bool {
             }
             *LIVE.write() = state;
             *DISPLAY_STATUS.write() = Some(display);
+        }
+        Event::QuickKeyState {
+            qsl,
+            systems,
+            group,
+        } => {
+            match QUICK_KEYS.write().as_mut() {
+                Some(keys) => {
+                    keys.qsl.clone_from(&qsl);
+                    keys.original_qsl.clone_from(&qsl);
+                    keys.systems = systems;
+                }
+                None => {
+                    *QUICK_KEYS.write() = Some(QuickKeys {
+                        qsl: qsl.clone(),
+                        original_qsl: qsl,
+                        systems,
+                    });
+                }
+            }
+            if let Some((index, digits)) = group
+                && let Some(keys) = GROUP_KEYS
+                    .write()
+                    .as_mut()
+                    .filter(|keys| keys.system.index == index)
+            {
+                keys.qgl.clone_from(&digits);
+                keys.original_qgl = digits;
+            }
         }
         Event::WaterfallStatus(reply) => match parse_gst(&reply) {
             Ok(status) => *WATERFALL_STATUS.write() = Some(status),
@@ -1242,10 +1319,9 @@ pub async fn start_remote_control() {
     SPECTRUM_WANTED.store(false, Ordering::SeqCst);
     WATERFALL_WANTED.store(false, Ordering::SeqCst);
     *QUICK_KEYS.write() = None;
-    *GROUP_KEYS.write() = None;
+    clear_group_keys();
     *HP_QUICK_KEYS.write() = None;
     *BCT8_BANKS.write() = None;
-    *QUICK_KEY_DRAFT.write() = QuickKeyDraft::default();
     *FILTER_ACTIVE.write() = SNAPSHOT.lock().expect("snapshot").is_some();
     *CONN.write() = if stop_reason.is_some() {
         ConnState::Lost
@@ -1295,6 +1371,11 @@ pub static QUICK_KEYS: GlobalSignal<Option<QuickKeys>> = Signal::global(|| None)
 /// Group quick keys of the system whose groups are expanded.
 pub static GROUP_KEYS: GlobalSignal<Option<GroupKeys>> = Signal::global(|| None);
 
+fn clear_group_keys() {
+    EXPANDED_GROUP_INDEX.store(u16::MAX, Ordering::Relaxed);
+    *GROUP_KEYS.write() = None;
+}
+
 /// Live Favorites/System/Department quick keys for HomePatrol and SDS scanners.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct HpQuickKeys {
@@ -1306,21 +1387,6 @@ pub struct HpQuickKeys {
 }
 
 pub static HP_QUICK_KEYS: GlobalSignal<Option<HpQuickKeys>> = Signal::global(|| None);
-
-/// Staged quick-key writes. Nothing here reaches the scanner until Apply is clicked.
-#[derive(Debug, Clone, PartialEq, Default)]
-pub struct QuickKeyDraft {
-    pub qsl: Option<String>,
-    pub qgl: Vec<(u16, String)>,
-}
-
-impl QuickKeyDraft {
-    pub fn count(&self) -> usize {
-        usize::from(self.qsl.is_some()) + self.qgl.len()
-    }
-}
-
-pub static QUICK_KEY_DRAFT: GlobalSignal<QuickKeyDraft> = Signal::global(QuickKeyDraft::default);
 
 /// True while a temporary scan filter is in place and can be restored.
 pub static FILTER_ACTIVE: GlobalSignal<bool> = Signal::global(|| false);
@@ -1495,11 +1561,15 @@ pub fn load_saved_snapshot() -> bool {
 
 /// `digits` with every assigned key (1 or 2) turned off except `position`, which is turned on.
 pub fn only_key(digits: &str, position: usize) -> String {
+    only_optional_key(digits, Some(position))
+}
+
+fn only_optional_key(digits: &str, position: Option<usize>) -> String {
     digits
         .bytes()
         .enumerate()
         .map(|(i, b)| match b {
-            b'1' | b'2' if i == position => '1',
+            b'1' | b'2' if Some(i) == position => '1',
             b'1' | b'2' => '2',
             other => other as char,
         })
@@ -1574,8 +1644,7 @@ pub async fn refresh_quick_keys() {
     .await;
     if let Some(keys) = warn("Reading quick keys", result) {
         // A group list from before the refresh may no longer match the scanner.
-        *GROUP_KEYS.write() = None;
-        *QUICK_KEY_DRAFT.write() = QuickKeyDraft::default();
+        clear_group_keys();
         *QUICK_KEYS.write() = Some(keys);
     }
 }
@@ -1597,90 +1666,128 @@ pub async fn load_group_keys(system: SystemSummary) {
         Ok(keys)
     })
     .await;
-    if let Some(mut keys) = warn("Reading groups", result) {
-        if let Some((_, staged)) = QUICK_KEY_DRAFT
-            .peek()
-            .qgl
-            .iter()
-            .find(|(i, _)| *i == keys.system.index.0)
-        {
-            keys.qgl.clone_from(staged);
-        }
+    if let Some(keys) = warn("Reading groups", result) {
+        EXPANDED_GROUP_INDEX.store(keys.system.index.0, Ordering::Relaxed);
         *GROUP_KEYS.write() = Some(keys);
     }
 }
 
-/// Stages a system quick-key change locally.
-pub fn toggle_system_key(key: u8) {
-    let position = models::qsl_position(key);
-    if let Some(keys) = QUICK_KEYS.write().as_mut() {
-        keys.qsl = toggled(&keys.qsl, position);
-        QUICK_KEY_DRAFT.write().qsl = (keys.qsl != keys.original_qsl).then(|| keys.qsl.clone());
-    }
+/// Systems that answer to quick key `key`, paired with the lockout state digit `digit` implies.
+fn systems_for_key(
+    systems: &[SystemSummary],
+    key: u8,
+    digit: u8,
+) -> Vec<(crate::database::Index, Option<bool>)> {
+    systems
+        .iter()
+        .filter(|system| system.quick_key == Some(key))
+        .map(|system| (system.index, Some(digit == b'2')))
+        .collect()
 }
 
-/// Stages a group quick-key change locally.
-pub fn toggle_group_key(system: crate::database::Index, key: u8) {
-    let position = models::qgl_position(key);
-    let mut group_keys = GROUP_KEYS.write();
-    let Some(keys) = group_keys.as_mut() else {
+/// Turns a system quick key on or off on the scanner straight away. The quick-key digit and the
+/// lockout of every system on that key are written together, so the change takes effect at once.
+pub async fn toggle_system_key(key: u8) {
+    let position = models::qsl_position(key);
+    let Some((wanted, lockouts)) = QUICK_KEYS.peek().as_ref().map(|keys| {
+        let wanted = toggled(&keys.qsl, position);
+        let digit = wanted.as_bytes().get(position).copied().unwrap_or(b'0');
+        (wanted, systems_for_key(&keys.systems, key, digit))
+    }) else {
         return;
     };
-    keys.qgl = toggled(&keys.qgl, position);
-    let mut draft = QUICK_KEY_DRAFT.write();
-    draft.qgl.retain(|(i, _)| *i != system.0);
-    if keys.qgl != keys.original_qgl {
-        draft.qgl.push((system.0, keys.qgl.clone()));
+    // Show the new state immediately; the read-back below corrects it if the scanner disagrees.
+    if let Some(keys) = QUICK_KEYS.write().as_mut() {
+        keys.qsl.clone_from(&wanted);
     }
-}
-
-/// Writes every staged quick-key change in one Program Mode session.
-pub async fn apply_quick_keys() {
-    let draft = QUICK_KEY_DRAFT.peek().clone();
-    if draft.count() == 0 {
-        return;
-    }
-    let applied = draft.clone();
+    let digits = wanted.clone();
     let result = run_job(true, move |link| {
-        models::with_program_mode(link, |link| {
-            if let Some(qsl) = &applied.qsl {
-                models::write_qsl(link, qsl)?;
-            }
-            for (system, qgl) in &applied.qgl {
-                models::write_qgl(link, crate::database::Index(*system), qgl)?;
-            }
-            Ok(())
+        let state = models::with_program_mode(link, |link| {
+            models::write_qsl(link, &digits)?;
+            models::write_system_lockouts(link, &lockouts)?;
+            Ok((models::read_qsl(link)?, models::read_system_lockouts(link)?))
         })?;
         resume_scanning(link);
-        Ok(())
+        Ok(state)
     })
     .await;
-    if warn("Applying quick keys", result).is_some() {
+    let Some((qsl, lockouts)) = warn("Changing quick key", result) else {
         if let Some(keys) = QUICK_KEYS.write().as_mut() {
-            keys.original_qsl.clone_from(&keys.qsl);
+            let original = keys.original_qsl.clone();
+            keys.qsl = original;
         }
-        if let Some(keys) = GROUP_KEYS.write().as_mut() {
-            keys.original_qgl.clone_from(&keys.qgl);
-        }
-        *QUICK_KEY_DRAFT.write() = QuickKeyDraft::default();
+        return;
+    };
+    if qsl.as_bytes().get(position) != wanted.as_bytes().get(position) {
+        push_message(
+            MessageKind::Warning,
+            "control",
+            format!("The scanner did not accept the change to quick key {key}."),
+        );
     }
-}
-
-/// Drops staged quick-key changes without touching the scanner.
-pub fn discard_quick_key_changes() {
     if let Some(keys) = QUICK_KEYS.write().as_mut() {
-        keys.qsl.clone_from(&keys.original_qsl);
+        keys.qsl.clone_from(&qsl);
+        keys.original_qsl = qsl;
+        for system in &mut keys.systems {
+            if let Some((_, lockout)) = lockouts.iter().find(|(i, _)| *i == system.index) {
+                system.lockout = *lockout;
+            }
+        }
     }
-    if let Some(keys) = GROUP_KEYS.write().as_mut() {
-        keys.qgl.clone_from(&keys.original_qgl);
-    }
-    *QUICK_KEY_DRAFT.write() = QuickKeyDraft::default();
 }
 
-/// Temporarily scans only system quick key `key` — and, if `group` is given, only that group
-/// quick key within it. The previous settings are saved first so they can be restored.
+/// Turns a group quick key on or off on the scanner straight away.
+pub async fn toggle_group_key(system: crate::database::Index, key: u8) {
+    let position = models::qgl_position(key);
+    let Some(wanted) = GROUP_KEYS
+        .peek()
+        .as_ref()
+        .filter(|keys| keys.system.index == system)
+        .map(|keys| toggled(&keys.qgl, position))
+    else {
+        return;
+    };
+    if let Some(keys) = GROUP_KEYS.write().as_mut() {
+        keys.qgl.clone_from(&wanted);
+    }
+    let digits = wanted.clone();
+    let result = run_job(true, move |link| {
+        let qgl = models::with_program_mode(link, |link| {
+            models::write_qgl(link, system, &digits)?;
+            models::read_qgl(link, system)
+        })?;
+        resume_scanning(link);
+        Ok(qgl)
+    })
+    .await;
+    let Some(qgl) = warn("Changing group quick key", result) else {
+        if let Some(keys) = GROUP_KEYS.write().as_mut() {
+            let original = keys.original_qgl.clone();
+            keys.qgl = original;
+        }
+        return;
+    };
+    if qgl.as_bytes().get(position) != wanted.as_bytes().get(position) {
+        push_message(
+            MessageKind::Warning,
+            "control",
+            format!("The scanner did not accept the change to group quick key {key}."),
+        );
+    }
+    if let Some(keys) = GROUP_KEYS
+        .write()
+        .as_mut()
+        .filter(|keys| keys.system.index == system)
+    {
+        keys.qgl.clone_from(&qgl);
+        keys.original_qgl = qgl;
+    }
+}
+
+/// Temporarily scans only `system` — and, if `group` is given, only that group quick key within
+/// it. The previous quick-key and system-lockout settings are saved first for restoration.
 pub async fn scan_only(system: SystemSummary, group: Option<u8>) {
-    let Some(key) = system.quick_key else { return };
+    let key = system.quick_key;
     let sys_index = system.index;
     let result = run_job(true, move |link| {
         let qsl = models::with_program_mode(link, |link| {
@@ -1717,12 +1824,34 @@ pub async fn scan_only(system: SystemSummary, group: Option<u8>) {
             }
             store_snapshot(Some(snapshot));
 
-            let digits = only_key(&before_qsl, models::qsl_position(key));
+            let digits = only_optional_key(&before_qsl, key.map(models::qsl_position));
             models::write_qsl(link, &digits)?;
             let exclusive_lockouts = exclusive_system_lockouts(&before_lockouts, sys_index);
             models::write_system_lockouts(link, &exclusive_lockouts)?;
-            if let (Some(g), Some(q)) = (group, before_qgl) {
-                models::write_qgl(link, sys_index, &only_key(&q, models::qgl_position(g)))?;
+            let expected_qgl = group
+                .zip(before_qgl.as_ref())
+                .map(|(group, digits)| only_key(digits, models::qgl_position(group)));
+            if let Some(qgl) = &expected_qgl {
+                models::write_qgl(link, sys_index, qgl)?;
+            }
+            let applied_qsl = models::read_qsl(link)?;
+            let mut applied_lockouts = models::read_system_lockouts(link)?;
+            applied_lockouts.sort_by_key(|(index, _)| index.0);
+            let mut expected_lockouts = exclusive_lockouts;
+            expected_lockouts.sort_by_key(|(index, _)| index.0);
+            let applied_qgl = group
+                .map(|_| models::read_qgl(link, sys_index))
+                .transpose()?;
+            if applied_qsl != digits
+                || applied_lockouts != expected_lockouts
+                || applied_qgl != expected_qgl
+            {
+                return Err(Error::UnexpectedReply {
+                    expected: "verified scan-only state",
+                    reply: format!(
+                        "QSL={applied_qsl}, lockouts={applied_lockouts:?}, QGL={applied_qgl:?}"
+                    ),
+                });
             }
             Ok(digits)
         })?;
@@ -1740,7 +1869,7 @@ pub async fn scan_only(system: SystemSummary, group: Option<u8>) {
             "control",
             "Temporary scan filter applied. Only the selected system is unlocked; use Restore to undo.".to_string(),
         );
-        *GROUP_KEYS.write() = None;
+        clear_group_keys();
     }
 }
 
@@ -1749,7 +1878,7 @@ pub async fn restore_filter() {
     let result = run_job(true, |link| restore_filter_now(link)).await;
     if warn("Restore", result).is_some() {
         *FILTER_ACTIVE.write() = false;
-        *GROUP_KEYS.write() = None;
+        clear_group_keys();
         refresh_quick_keys().await;
     }
 }
@@ -1769,6 +1898,7 @@ mod tests {
     fn filter_digits() {
         assert_eq!(only_key("1201", 0), "1202");
         assert_eq!(only_key("1201", 1), "2102");
+        assert_eq!(only_optional_key("1201", None), "2202");
         assert_eq!(toggled("1201", 0), "2201");
         assert_eq!(toggled("1201", 2), "1201");
     }
@@ -1787,6 +1917,33 @@ mod tests {
                 (crate::database::Index(20), Some(false)),
                 (crate::database::Index(30), Some(true)),
             ]
+        );
+    }
+
+    /// Toggling a key off locks out every system on it; toggling it on clears those lockouts.
+    #[test]
+    fn toggling_a_system_key_locks_out_every_system_on_that_key() {
+        let system = |index: u16, quick_key: Option<u8>| SystemSummary {
+            index: crate::database::Index(index),
+            name: format!("S{index}"),
+            quick_key,
+            lockout: None,
+        };
+        let systems = [
+            system(10, Some(3)),
+            system(20, Some(3)),
+            system(30, Some(4)),
+        ];
+        assert_eq!(
+            systems_for_key(&systems, 3, b'2'),
+            vec![
+                (crate::database::Index(10), Some(true)),
+                (crate::database::Index(20), Some(true)),
+            ]
+        );
+        assert_eq!(
+            systems_for_key(&systems, 4, b'1'),
+            vec![(crate::database::Index(30), Some(false))]
         );
     }
 

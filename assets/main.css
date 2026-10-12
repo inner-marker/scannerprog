@@ -652,17 +652,6 @@ button:hover:not(:disabled) {
 	gap: 0.45rem;
 	margin-top: 0.6rem;
 }
-.qk-pending {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 0.6em;
-    margin: 0.5em 0;
-    padding: 0.6em 0.8em;
-    border: 1px solid #7758c8;
-    border-radius: 4px;
-    background: #29203f;
-}
 .program-mode-badge {
     display: inline-flex;
     align-items: center;
@@ -685,6 +674,9 @@ span.qk.on { color: #5fd47c; font-weight: bold; }
 span.qk.off { color: #e07070; text-decoration: line-through; }
 span.qk.none { opacity: 0.6; }
 .qk-system { margin: 0.3em 0; display: flex; flex-wrap: wrap; align-items: center; gap: 0.5em; }
+.qk-state { min-width: 4.5em; font-size: 0.85em; font-weight: 600; }
+.qk-state.on { color: #287a37; }
+.qk-state.off { color: #8a3131; }
 .qk-groups { flex-basis: 100%; margin: 0.2em 0 0.2em 2em; list-style: none; padding: 0; }
 .qk-groups li { display: flex; gap: 0.5em; align-items: center; margin: 0.2em 0; }
 

@@ -1136,6 +1136,8 @@ pub struct SystemSummary {
     pub name: String,
     /// System quick key 0-99, if one is assigned.
     pub quick_key: Option<u8>,
+    /// The system-level lockout state; `None` when the model omits the field.
+    pub lockout: Option<bool>,
 }
 
 /// A group as listed for quick-key control.
@@ -1228,6 +1230,7 @@ pub fn read_system_summaries<S: Scanner>(sc: &mut S) -> Result<Vec<SystemSummary
                 Some(KeyAssignment::Key(k)) => Some(k),
                 _ => None,
             },
+            lockout: rec.lockout,
         })
         .collect())
 }

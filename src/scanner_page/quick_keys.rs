@@ -1,13 +1,12 @@
-//! Quick keys: staged system/group edits and the temporary scan filter.
+//! Quick keys: immediate system/group edits and the temporary scan filter.
 
 use dioxus::prelude::*;
 
 use super::capability::gate;
 use crate::control::{
-    BCT8_BANKS, FILTER_ACTIVE, GROUP_KEYS, HP_QUICK_KEYS, HpQuickKeyLevel, QUICK_KEY_DRAFT,
-    QUICK_KEYS, apply_quick_keys, discard_filter, discard_quick_key_changes, load_group_keys,
-    refresh_hp_quick_keys, refresh_quick_keys, restore_filter, scan_only, toggle_bct8_bank,
-    toggle_group_key, toggle_hp_quick_key, toggle_system_key,
+    BCT8_BANKS, FILTER_ACTIVE, GROUP_KEYS, HP_QUICK_KEYS, HpQuickKeyLevel, QUICK_KEYS,
+    discard_filter, load_group_keys, refresh_hp_quick_keys, refresh_quick_keys, restore_filter,
+    scan_only, toggle_bct8_bank, toggle_group_key, toggle_hp_quick_key, toggle_system_key,
 };
 use crate::models::live::{Capability, Family};
 use crate::scanner_interaction::connected_model;
@@ -51,10 +50,8 @@ pub fn QuickKeys() -> Element {
     let keys = QUICK_KEYS.read().clone();
     let groups = GROUP_KEYS.read().clone();
     let filter = *FILTER_ACTIVE.read();
-    let pending = QUICK_KEY_DRAFT.read().count();
     let page = *QUICK_KEY_PAGE.read();
     let editing_enabled = enabled && !filter;
-    let scan_only_enabled = enabled && pending == 0;
 
     rsx! {
         section { id: "quick-keys", class: "panel",
@@ -66,27 +63,12 @@ pub fn QuickKeys() -> Element {
                 div { class: "filter-banner",
                     "Temporary scan filter active. "
                     button {
-                        disabled: !editing_enabled,
+                        disabled: !enabled,
                         title: "Put the quick keys back the way they were.",
                         onclick: move |_| {
                             spawn(restore_filter());
                         },
                         "Restore"
-                    }
-                    if pending > 0 {
-                        div { class: "qk-pending", role: "status",
-                            strong { "{pending} pending quick-key change(s)." }
-                            span { " Applying briefly pauses scanning." }
-                            button {
-                                disabled: !enabled || pending > 0,
-                                title: if pending > 0 { "Apply or discard pending changes before reading again." },
-                                onclick: move |_| {
-                                    spawn(apply_quick_keys());
-                                },
-                                "Apply"
-                            }
-                            button { onclick: move |_| discard_quick_key_changes(), "Discard changes" }
-                        }
                     }
                     button {
                         title: "Forget the saved settings without writing them to the scanner.",
@@ -96,7 +78,7 @@ pub fn QuickKeys() -> Element {
                 }
             }
             p { class: "control-hint",
-                "Reading or changing quick keys briefly pauses scanning; the scanner is set back to Scan afterwards."
+                "Quick-key changes are written to the scanner as soon as you click them. Each change, and the 15-second state refresh, briefly pauses scanning; the scanner is set back to Scan afterwards."
             }
             button {
                 disabled: !enabled,
@@ -138,7 +120,7 @@ pub fn QuickKeys() -> Element {
                                     disabled: !editing_enabled || digit == b'0',
                                     title: "{name}",
                                     onclick: move |_| {
-                                        toggle_system_key(key);
+                                        spawn(toggle_system_key(key));
                                     },
                                     "{key}"
                                 }
@@ -153,6 +135,8 @@ pub fn QuickKeys() -> Element {
                                 .quick_key
                                 .map(|k| keys.qsl.as_bytes()[crate::models::qsl_position(k)])
                                 .unwrap_or(b'0');
+                            let digit = if system.lockout == Some(true) { b'2' } else { digit };
+                            let scanning = digit != b'2';
                             let for_scan = system.clone();
                             let for_groups = system.clone();
                             let open = groups.as_ref().is_some_and(|g| g.system.index == system.index);
@@ -163,8 +147,11 @@ pub fn QuickKeys() -> Element {
                             rsx! {
                                 div { class: "qk-system",
                                     span { class: key_class(digit), "{label}" }
+                                    span { class: if scanning { "qk-state on" } else { "qk-state off" },
+                                        if scanning { "Scanning" } else { "Off" }
+                                    }
                                     button {
-                                        disabled: !scan_only_enabled || system.quick_key.is_none(),
+                                        disabled: !enabled,
                                         title: "Temporarily scan only this system.",
                                         onclick: move |_| {
                                             spawn(scan_only(for_scan.clone(), None));
@@ -180,7 +167,7 @@ pub fn QuickKeys() -> Element {
                                     }
                                     if open {
                                         if let Some(g) = groups.clone() {
-                                            GroupList { keys: g, enabled: editing_enabled, scan_only_enabled }
+                                            GroupList { keys: g, enabled: editing_enabled, scan_only_enabled: enabled }
                                         }
                                     }
                                 }
@@ -357,15 +344,16 @@ fn GroupList(keys: crate::control::GroupKeys, enabled: bool, scan_only_enabled: 
                             }
                             button {
                                 disabled: !enabled || key.is_none(),
+                                title: "Write this change to the scanner now.",
                                 onclick: move |_| {
                                     if let Some(k) = key {
-                                        toggle_group_key(index, k);
+                                        spawn(toggle_group_key(index, k));
                                     }
                                 },
                                 "On/Off"
                             }
                             button {
-                                disabled: !scan_only_enabled || key.is_none() || system.quick_key.is_none(),
+                                disabled: !scan_only_enabled || key.is_none(),
                                 title: "Temporarily scan only this group.",
                                 onclick: move |_| {
                                     spawn(scan_only(system.clone(), key));
@@ -374,6 +362,7 @@ fn GroupList(keys: crate::control::GroupKeys, enabled: bool, scan_only_enabled: 
                             }
                         }
                     }
+
                 }
             }
         }

@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.2.2] - Fix scan functions & bugs
+
+
+
 ## [0.2.1] - Refined Scanner Interface
 
 - Scanner page rebuilt per `Roadmaps/0-2-1 SCANNER_PAGE_PLAN.md` (Phase 1, XT/P2 family: BCD325P2, BCD396XT, BC346XT):
@@ -10,8 +14,10 @@
 
 - Added the BCD996XT and BCD996P2 (database and live control; untested on hardware). Their volume (0–29) and squelch (0–19) ranges differ, there is no power-off command, and the `[RECORD]` fields are not preserved.
 - Scanner page Phase 2:
-  - Added staged System/Group Quick Key edits with a single Program Mode apply, discard support, paging, digit shortcuts, and a visible Program Mode badge.
-  - Corrected **Scan only this** so group filters temporarily lock every other system, including systems without a quick key or systems sharing the selected quick key, and restore their original lockout states afterward.
+  - Added System/Group Quick Key editing with paging, digit shortcuts, and a visible Program Mode badge. Each toggle is written to the scanner immediately in its own Program Mode session (`PRG` → write → `EPG` → `KEY,S,P`); there is no staging or **Apply** step.
+  - A system quick-key toggle now writes the system lockout of every system on that key alongside the `QSL` digit, so keys shared by several systems — and systems already locked out on the front panel — follow the toggle. Writes are verified by read-back and report a warning if the scanner rejects them.
+  - Added actor-owned 15-second polling of the scanner's QSL, expanded QGL, and system lockout state, with explicit **Scanning**/**Off** status in the Quick Keys panel. Front-panel changes now flow through the same persistent serial polling loop as GLG/STS instead of a UI-lifecycle timer.
+  - Corrected **Scan only this** so group filters work for keyed and unkeyed parent systems, temporarily lock every other system (including duplicate quick-key assignments), verify the scanner's resulting state, and restore the original lockout/quick-key states afterward.
   - Added a demand-driven `STS` LCD mirror, model-specific virtual keypads with tap/long-press gestures, `CSC` sweep display, battery/weather/GPS status, and log/error navigation.
   - Added live-control profiles for the BR330T, BCD996T, BCT15 and BCT15X. Their older database dialects remain explicitly unsupported rather than being sent incompatible XT/P2 memory commands.
   - Added parsers/tests for `STS` and streamed `CSC` samples. Hardware transcript/UI replay remains pending captured data.

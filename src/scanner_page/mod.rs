@@ -86,7 +86,7 @@ pub fn ScannerPage() -> Element {
                                         ));
                                     }
                                 } else if gate(Capability::QuickKeysSystems).is_enabled() {
-                                    crate::control::toggle_system_key(key);
+                                    spawn(crate::control::toggle_system_key(key));
                                 }
                             }
                             return;
